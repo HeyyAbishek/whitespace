@@ -1,41 +1,62 @@
-'use client';
+"use client";
 
 import React, { useState, useEffect } from 'react';
 import { Square, Circle, Type, MousePointer2, Trash2, Undo } from 'lucide-react';
+import { useStorage, useMutation, useUndo, useRedo } from "@/liveblocks.config";
 
 export default function Canvas() {
-  const [elements, setElements] = useState<any[]>([]);
+  // --- 1. CLOUD STATE (The New Heart) ---
+  const elements = useStorage((root) => root.elements);
+  const undo = useUndo();
+  const redo = useRedo();
+
+  // --- 2. CLOUD ACTIONS (The New Muscles) ---
+  const addElement = useMutation(({ storage }, newShape) => {
+    storage.get("elements").push(newShape);
+  }, []);
+
+  const updateElement = useMutation(({ storage }, { id, updates }) => {
+    const liveElements = storage.get("elements");
+    const index = liveElements.findIndex((el) => el.id === id);
+    if (index !== -1) {
+      liveElements.set(index, { ...liveElements.get(index), ...updates });
+    }
+  }, []);
+
+  const deleteElement = useMutation(({ storage }, id) => {
+    const liveElements = storage.get("elements");
+    const index = liveElements.findIndex((el) => el.id === id);
+    if (index !== -1) liveElements.delete(index);
+  }, []);
+  
+  const clearBoard = useMutation(({ storage }) => {
+    const liveElements = storage.get("elements");
+    while (liveElements.length > 0) liveElements.delete(0);
+  }, []);
+
+  // --- LOCAL INTERACTION STATE (UI Only) ---
   const [camera, setCamera] = useState({ x: 0, y: 0, zoom: 1 });
   const [tool, setTool] = useState<'select' | 'rectangle' | 'circle' | 'text'>('rectangle');
   const [currentColor, setCurrentColor] = useState('#ffffff');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   
-  // Interaction State
   const [isDragging, setIsDragging] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
-  const [isSpacePressed, setIsSpacePressed] = useState(false); // NEW: Track Spacebar
+  const [isSpacePressed, setIsSpacePressed] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [drawingId, setDrawingId] = useState<string | null>(null);
-  const [mounted, setMounted] = useState(false);
 
-  // --- PERSISTENCE ---
-  useEffect(() => {
-    setMounted(true);
-    const saved = localStorage.getItem('whitespace-elements');
-    if (saved) try { setElements(JSON.parse(saved)); } catch (e) {}
-  }, []);
-
-  useEffect(() => {
-    if (mounted) localStorage.setItem('whitespace-elements', JSON.stringify(elements));
-  }, [elements, mounted]);
-
-  // --- KEYBOARD LISTENERS (Shortcuts + Space Tracking) ---
+  // --- KEYBOARD LISTENERS ---
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === ' ') setIsSpacePressed(true); // Track Space Down
+      if (e.key === ' ') setIsSpacePressed(true);
+      
+      // Undo/Redo (Bonus!)
+      if (e.ctrlKey && e.key === 'z') { e.preventDefault(); undo(); }
+      if (e.ctrlKey && e.key === 'y') { e.preventDefault(); redo(); }
 
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId) {
-        setElements(prev => prev.filter(el => el.id !== selectedId));
+        deleteElement(selectedId);
         setSelectedId(null);
       }
       if (e.key === 'v') setTool('select');
@@ -45,17 +66,16 @@ export default function Canvas() {
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
-      if (e.key === ' ') setIsSpacePressed(false); // Track Space Up
+      if (e.key === ' ') setIsSpacePressed(false);
     };
 
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
-    
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [selectedId]);
+  }, [selectedId, deleteElement, undo, redo]);
 
   // --- MATH ---
   const screenToWorld = (e: React.PointerEvent) => {
@@ -66,11 +86,10 @@ export default function Canvas() {
     };
   };
 
-  // --- INTERACTION ---
+  // --- INTERACTION HANDLERS ---
   const handlePointerDown = (e: React.PointerEvent) => {
     const { x, y } = screenToWorld(e);
 
-    // FIX: Use robust state check instead of getModifierState
     if (e.button === 1 || isSpacePressed) {
       setIsPanning(true);
       return;
@@ -79,30 +98,28 @@ export default function Canvas() {
     // DRAWING
     if (tool === 'rectangle' || tool === 'circle') {
       const newId = crypto.randomUUID();
-      setElements(prev => [...prev, { 
+      addElement({
         id: newId, type: tool, x, y, width: 0, height: 0, 
-        stroke: currentColor, fill: 'transparent' 
-      }]);
+        stroke: currentColor, fill: 'transparent'
+      });
       setDrawingId(newId);
     }
     // TEXT TOOL
     else if (tool === 'text') {
       const content = prompt("Enter text:");
       if (content && content.trim() !== "") {
-        const newId = crypto.randomUUID();
-        setElements(prev => [...prev, { 
-          id: newId, type: 'text', x, y, width: 100, height: 40, 
+        addElement({
+          id: crypto.randomUUID(), type: 'text', x, y, width: 100, height: 40, 
           content: content, stroke: currentColor 
-        }]);
+        });
       }
-      setTool('select'); 
+      setTool('select');
     }
     // SELECT TOOL
     else if (tool === 'select') {
-      const clickedShape = [...elements].reverse().find(el => {
-        if (el.type === 'text') {
-            return x >= el.x && x <= el.x + 200 && y >= el.y && y <= el.y + 40;
-        }
+      // Use "elements || []" because cloud might be loading
+      const clickedShape = [...(elements || [])].reverse().find(el => {
+        if (el.type === 'text') return x >= el.x && x <= el.x + 200 && y >= el.y && y <= el.y + 40;
         const left = Math.min(el.x, el.x + el.width);
         const right = Math.max(el.x, el.x + el.width);
         const top = Math.min(el.y, el.y + el.height);
@@ -129,12 +146,20 @@ export default function Canvas() {
 
     const { x, y } = screenToWorld(e);
 
+    // Live Update via Mutation
     if (drawingId && (tool === 'rectangle' || tool === 'circle')) {
-      setElements(prev => prev.map(el => el.id === drawingId ? { ...el, width: x - el.x, height: y - el.y } : el));
+      // We need to find the START position of the current drawing shape
+      // For simplicity in this demo, we assume start was where we clicked.
+      // A more robust way is to store "startPoint" in local state.
+      // But let's try updating directly:
+      const el = elements?.find(e => e.id === drawingId);
+      if(el) {
+          updateElement({ id: drawingId, updates: { width: x - el.x, height: y - el.y } });
+      }
     }
 
     if (tool === 'select' && isDragging && selectedId) {
-      setElements(prev => prev.map(el => el.id === selectedId ? { ...el, x: x - dragStart.x, y: y - dragStart.y } : el));
+      updateElement({ id: selectedId, updates: { x: x - dragStart.x, y: y - dragStart.y } });
     }
   };
 
@@ -150,7 +175,7 @@ export default function Canvas() {
     setCamera(prev => ({ ...prev, zoom: newZoom }));
   };
 
-  if (!mounted) return null;
+  if (!elements) return <div className="text-white p-10">Loading Cloud...</div>;
 
   return (
     <div className={`w-screen h-screen overflow-hidden bg-[#121212] text-white relative select-none ${isSpacePressed ? 'cursor-grab' : ''}`}>
@@ -171,18 +196,10 @@ export default function Canvas() {
         </button>
         
         <div className="w-px bg-[#333] h-6 mx-1 shrink-0" />
-        
-        {/* NATIVE COLOR PICKER */}
-        <input 
-          type="color" 
-          value={currentColor} 
-          onChange={(e) => setCurrentColor(e.target.value)} 
-          className="w-8 h-8 p-0 border-0 rounded cursor-pointer shrink-0" 
-        />
-
+        <input type="color" value={currentColor} onChange={(e) => setCurrentColor(e.target.value)} className="w-8 h-8 p-0 border-0 rounded cursor-pointer shrink-0" />
         <div className="w-px bg-[#333] h-6 mx-1 shrink-0" />
         
-        <button onClick={() => { setElements([]); localStorage.removeItem('whitespace-elements'); }} className="p-2 shrink-0 rounded hover:bg-red-900/50 text-red-400">
+        <button onClick={() => { if(confirm('Clear board?')) clearBoard(); }} className="p-2 shrink-0 rounded hover:bg-red-900/50 text-red-400">
           <Trash2 size={20} />
         </button>
       </div>
@@ -199,6 +216,7 @@ export default function Canvas() {
            
            <div className="absolute inset-0 opacity-20" style={{ backgroundImage: 'radial-gradient(#888 1px, transparent 1px)', backgroundSize: '20px 20px' }} />
            
+           {/* RENDER ELEMENTS */}
            {elements.map(el => {
              const isSelected = selectedId === el.id;
              const baseStyle = {
