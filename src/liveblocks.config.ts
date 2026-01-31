@@ -23,4 +23,5 @@ export const {
   useSelf,
   useUndo,
   useRedo,
+  useMyPresence,
 } = createRoomContext<Presence, Storage>(client);

@@ -8,7 +8,7 @@ import { LiveList } from "@liveblocks/client"; // Import this
 export default function Home() {
   return (
     <RoomProvider 
-      id="my-room-v3" 
+      id="my-room-final-v1" 
       initialPresence={{ cursor: null, selection: [] }} 
       initialStorage={{ elements: new LiveList([]) }} // Explicit initialization 
     >
