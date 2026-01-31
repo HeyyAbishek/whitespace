@@ -10,8 +10,10 @@ export default function Canvas() {
   const [currentColor, setCurrentColor] = useState('#ffffff');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   
+  // Interaction State
   const [isDragging, setIsDragging] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
+  const [isSpacePressed, setIsSpacePressed] = useState(false); // NEW: Track Spacebar
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [drawingId, setDrawingId] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
@@ -27,9 +29,11 @@ export default function Canvas() {
     if (mounted) localStorage.setItem('whitespace-elements', JSON.stringify(elements));
   }, [elements, mounted]);
 
-  // --- SHORTCUTS ---
+  // --- KEYBOARD LISTENERS (Shortcuts + Space Tracking) ---
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === ' ') setIsSpacePressed(true); // Track Space Down
+
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId) {
         setElements(prev => prev.filter(el => el.id !== selectedId));
         setSelectedId(null);
@@ -39,8 +43,18 @@ export default function Canvas() {
       if (e.key === 'c') setTool('circle');
       if (e.key === 't') setTool('text');
     };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.key === ' ') setIsSpacePressed(false); // Track Space Up
+    };
+
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
   }, [selectedId]);
 
   // --- MATH ---
@@ -56,8 +70,8 @@ export default function Canvas() {
   const handlePointerDown = (e: React.PointerEvent) => {
     const { x, y } = screenToWorld(e);
 
-    // Pan
-    if (e.button === 1 || e.getModifierState('Space')) {
+    // FIX: Use robust state check instead of getModifierState
+    if (e.button === 1 || isSpacePressed) {
       setIsPanning(true);
       return;
     }
@@ -81,16 +95,14 @@ export default function Canvas() {
           content: content, stroke: currentColor 
         }]);
       }
-      setTool('select'); // Auto-switch to Select to move it immediately
+      setTool('select'); 
     }
     // SELECT TOOL
     else if (tool === 'select') {
       const clickedShape = [...elements].reverse().find(el => {
-        // Text detection (simpler box)
         if (el.type === 'text') {
             return x >= el.x && x <= el.x + 200 && y >= el.y && y <= el.y + 40;
         }
-        // Shape detection
         const left = Math.min(el.x, el.x + el.width);
         const right = Math.max(el.x, el.x + el.width);
         const top = Math.min(el.y, el.y + el.height);
@@ -141,7 +153,7 @@ export default function Canvas() {
   if (!mounted) return null;
 
   return (
-    <div className="w-screen h-screen overflow-hidden bg-[#121212] text-white relative select-none">
+    <div className={`w-screen h-screen overflow-hidden bg-[#121212] text-white relative select-none ${isSpacePressed ? 'cursor-grab' : ''}`}>
       
       {/* TOOLBAR */}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-[#1e1e1e] p-2 rounded-lg flex gap-2 z-50 border border-[#333] shadow-xl items-center">
