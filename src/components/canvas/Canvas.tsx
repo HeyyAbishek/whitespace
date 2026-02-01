@@ -4,14 +4,14 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Square, Circle, Type, MousePointer2, Trash2, Undo, Redo, Camera, 
   StickyNote, Image as ImageIcon, Sun, Moon, MessageCircle, X, Send, 
-  User, Check 
+  User, Pencil
 } from 'lucide-react';
 import { useStorage, useMutation, useUndo, useRedo, useOthers, useMyPresence, useHistory } from "@/liveblocks.config";
 import { toPng } from 'html-to-image';
 import Cursor from './Cursor';
 
 // --- TYPES ---
-type LayerType = 'rectangle' | 'circle' | 'text' | 'note' | 'image';
+type LayerType = 'rectangle' | 'circle' | 'text' | 'note' | 'image' | 'pencil';
 
 interface Layer {
   id: string;
@@ -23,6 +23,7 @@ interface Layer {
   fill?: string;
   stroke?: string;
   content?: string;
+  points?: number[][];
 }
 
 interface Message {
@@ -54,15 +55,12 @@ export default function Canvas() {
   // --- MUTATIONS ---
   const addElement = useMutation(({ storage }, newShape: Layer) => {
     const existingElements = storage.get("elements");
-    // Safety check: Stop if storage isn't loaded yet
     if (!existingElements) return;
-    
     existingElements.push(newShape);
   }, []);
 
   const updateElement = useMutation(({ storage }, { id, updates }: { id: string; updates: Partial<Layer> }) => {
     const liveElements = storage.get("elements");
-    // Safety check: Stop if storage isn't loaded yet
     if (!liveElements) return;
     
     const index = liveElements.findIndex((el) => el.id === id);
@@ -73,7 +71,6 @@ export default function Canvas() {
 
   const deleteElement = useMutation(({ storage }, id: string) => {
     const liveElements = storage.get("elements");
-    // Safety check: Stop if storage isn't loaded yet
     if (!liveElements) return;
     
     const index = liveElements.findIndex((el) => el.id === id);
@@ -98,6 +95,7 @@ export default function Canvas() {
             user: user, 
             text: text,
             color: userColor,
+            timestamp: Date.now()
         });
     }
   }, []);
@@ -169,7 +167,6 @@ export default function Canvas() {
       if (result) {
         const img = new Image();
         img.onload = () => {
-            // Requirement: Max width 300px (Ultra-Aggressive Compression)
             const maxSize = 300;
             let width = img.width;
             let height = img.height;
@@ -179,7 +176,6 @@ export default function Canvas() {
                 width = maxSize;
             }
 
-            // Requirement: Use temporary HTML canvas
             const canvas = document.createElement('canvas');
             canvas.width = width;
             canvas.height = height;
@@ -187,14 +183,11 @@ export default function Canvas() {
             const ctx = canvas.getContext('2d');
             if(ctx) {
                 ctx.drawImage(img, 0, 0, width, height);
-                
-                // Requirement: Convert to JPEG with 0.3 quality
                 const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.3); 
 
                 const startX = (window.innerWidth / 2 - camera.x) / camera.zoom;
                 const startY = (window.innerHeight / 2 - camera.y) / camera.zoom;
                 
-                // Requirement: Add to Liveblocks storage
                 addElement({
                     id: crypto.randomUUID(),
                     type: 'image',
@@ -244,6 +237,7 @@ export default function Canvas() {
       }
 
       if (e.key === 'v') setTool('select');
+      if (e.key === 'p') setTool('pencil');
       if (e.key === 'r') setTool('rectangle');
       if (e.key === 'c') setTool('circle');
       if (e.key === 't') setTool('text');
@@ -264,9 +258,7 @@ export default function Canvas() {
 
   // --- POINTER EVENTS ---
   const handlePointerDown = (e: React.PointerEvent) => {
-    // Start history batch
     history.pause();
-
     const { x, y } = screenToWorld(e.clientX, e.clientY);
 
     // 0. Pan / Middle Click
@@ -276,6 +268,21 @@ export default function Canvas() {
     }
 
     // 1. Drawing Logic
+    if (tool === 'pencil') {
+        const newId = crypto.randomUUID();
+        addElement({ 
+            id: newId, 
+            type: 'pencil', 
+            x, y, 
+            width: 0, height: 0, 
+            points: [[0, 0], [0, 0]], 
+            stroke: currentColor, 
+            fill: 'transparent' 
+        });
+        setDrawingId(newId);
+        return;
+    }
+
     if (tool === 'rectangle' || tool === 'circle') {
       const newId = crypto.randomUUID();
       addElement({ 
@@ -290,7 +297,7 @@ export default function Canvas() {
       return;
     }
     
-    // 2. Click-to-Add Tools (Text, Note)
+    // 2. Click-to-Add Tools
     if (tool === 'text') {
         addElement({ id: crypto.randomUUID(), type: 'text', x, y, width: 150, height: 40, content: "Double Click to Edit", stroke: isDarkMode ? '#fff' : '#000' });
         setTool('select');
@@ -367,7 +374,24 @@ export default function Canvas() {
     if (drawingId) {
       const el = elements.find(e => e.id === drawingId);
       if (el) {
-          updateElement({ id: drawingId, updates: { width: x - el.x, height: y - el.y } });
+          if (el.type === 'pencil' && el.points) {
+              const lastPoint = el.points[el.points.length - 1];
+              // OPTIMIZATION: Integer Rounding
+              const newPointX = Math.round(x - el.x);
+              const newPointY = Math.round(y - el.y);
+              const dist = Math.hypot(newPointX - lastPoint[0], newPointY - lastPoint[1]);
+              
+              // OPTIMIZATION: Increase Threshold to 5
+              if (dist > 5) { 
+                  const newPoints = [...el.points, [newPointX, newPointY]];
+                  updateElement({ 
+                      id: drawingId, 
+                      updates: { points: newPoints } 
+                  });
+              }
+          } else {
+              updateElement({ id: drawingId, updates: { width: x - el.x, height: y - el.y } });
+          }
       }
     }
 
@@ -377,9 +401,7 @@ export default function Canvas() {
   };
 
   const handlePointerUp = () => {
-    // End history batch
     history.resume();
-
     setDrawingId(null);
     setIsDragging(false);
     setIsPanning(false);
@@ -397,12 +419,6 @@ export default function Canvas() {
     e.stopPropagation();
     setEditingId(id);
     setTempText(content || "");
-  };
-
-  const handleSendMessage = () => {
-    const safeName = username || "Guest";
-    sendMessage({ text: chatInput, user: safeName });
-    setChatInput('');
   };
 
   // --- RENDER HELPERS ---
@@ -456,9 +472,10 @@ export default function Canvas() {
           </div>
       )}
 
-      {/* 3. TOOLBAR (Fixed Top) */}
+      {/* 3. TOOLBAR */}
       <div className={`fixed top-4 left-1/2 -translate-x-1/2 p-2 rounded-lg flex gap-2 z-50 border items-center ${toolbarClass}`}>
         <button onClick={() => setTool('select')} className={buttonClass(tool === 'select')} title="Select (V)"><MousePointer2 size={20} /></button>
+        <button onClick={() => setTool('pencil')} className={buttonClass(tool === 'pencil')} title="Pencil (P)"><Pencil size={20} /></button>
         <button onClick={() => setTool('rectangle')} className={buttonClass(tool === 'rectangle')} title="Rectangle (R)"><Square size={20} /></button>
         <button onClick={() => setTool('circle')} className={buttonClass(tool === 'circle')} title="Circle (C)"><Circle size={20} /></button>
         <button onClick={() => setTool('text')} className={buttonClass(tool === 'text')} title="Text (T)"><Type size={20} /></button>
@@ -502,40 +519,42 @@ export default function Canvas() {
         <button onClick={handleExport} className={`p-2 shrink-0 rounded ${isDarkMode ? 'hover:bg-green-900/30' : 'hover:bg-green-100'} text-green-500`}><Camera size={20} /></button>
       </div>
 
-      {/* 4. CHAT SIDEBAR (Fixed Right) */}
+      {/* 4. CHAT SIDEBAR */}
       {isChatOpen && (
-        <div className="fixed right-4 top-20 bottom-20 w-80 bg-[#1e1e1e] border border-[#333] rounded-xl flex flex-col shadow-2xl z-50">
-            {/* Header */}
-            <div className="p-3 border-b border-[#333] flex justify-between items-center shrink-0">
-                <h3 className="font-bold text-white">Live Chat</h3>
-                <button onClick={() => setIsChatOpen(false)} className="text-white hover:bg-[#333] p-1 rounded"><X size={18}/></button>
+        <div className={`fixed right-4 top-20 bottom-20 w-80 flex flex-col rounded-xl border shadow-2xl pointer-events-auto z-50 ${isDarkMode ? 'bg-[#1e1e1e] border-[#333]' : 'bg-white'}`}>
+            <div className="p-3 border-b border-gray-700 flex justify-between items-center shrink-0">
+                <h3 className="font-bold">Live Chat</h3>
+                <button onClick={() => setIsChatOpen(false)}><X size={18}/></button>
             </div>
-            {/* Message List */}
             <div className="flex-1 overflow-y-auto min-h-0 p-3 space-y-2">
                 {messages.map((msg, i) => (
                     <div key={i} className="flex flex-col">
-                        <span className="text-xs font-bold" style={{color: msg.color}}>{msg.user}</span>
-                        <div className="p-2 bg-[#333] text-white rounded text-sm break-words">{msg.text}</div>
+                        <span className="text-xs font-bold opacity-75" style={{color: msg.color}}>{msg.user}</span>
+                        <div className={`p-2 rounded text-sm break-words ${isDarkMode ? 'bg-[#333] text-white' : 'bg-gray-100 text-black'}`}>
+                            {msg.text}
+                        </div>
                     </div>
                 ))}
                 <div ref={chatEndRef}/>
             </div>
-            {/* Input */}
-            <div className="p-3 border-t border-[#333] shrink-0 flex gap-2">
-                <input className="flex-1 p-2 rounded bg-[#2a2a2a] text-white border border-[#444]"
+            <div className="p-3 border-t border-gray-700 shrink-0 flex gap-2">
+                <input 
+                    className={`flex-1 p-2 rounded border ${isDarkMode ? 'bg-[#2a2a2a] border-[#444] text-white' : 'bg-white text-black'}`}
+                    placeholder="Type..."
                     value={chatInput} 
                     onChange={e => setChatInput(e.target.value)} 
-                    onKeyDown={e => e.key === 'Enter' && handleSendMessage()} 
-                    placeholder="Type..."
+                    onKeyDown={e => e.key === 'Enter' && (sendMessage({ text: chatInput, user: username }), setChatInput(''))} 
                 />
-                <button onClick={handleSendMessage} className="p-2 bg-blue-600 text-white rounded"><Send size={16}/></button>
+                <button onClick={() => (sendMessage({ text: chatInput, user: username }), setChatInput(''))} className="p-2 bg-blue-600 text-white rounded hover:bg-blue-700">
+                    <Send size={16}/>
+                </button>
             </div>
         </div>
       )}
 
-      {/* 5. MAIN CANVAS */}
+      {/* 5. MAIN CANVAS WRAPPER (Unified Container) */}
       <div 
-        className="w-full h-full cursor-crosshair touch-none"
+        className={`w-full h-full block touch-none ${tool === 'select' ? 'cursor-default' : 'cursor-crosshair'}`}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
@@ -550,26 +569,47 @@ export default function Canvas() {
            {elements.map((el, index) => {
              const uniqueKey = `${el.id}-${index}`; 
              const isSelected = selectedId === el.id;
+             // Dynamic CSS for Shapes: Ghosts when drawing, Solid when selecting
+             const pointerStyle = { 
+                pointerEvents: tool === 'select' ? 'auto' : 'none',
+                cursor: tool === 'select' ? 'move' : 'default' 
+             } as const;
+
              const baseStyle = {
                position: 'absolute' as const,
-               left: Math.min(el.x, el.x + el.width),
-               top: Math.min(el.y, el.y + el.height),
-               width: Math.abs(el.width),
-               height: Math.abs(el.height),
-               borderColor: el.stroke,
-               color: el.stroke,
-               pointerEvents: 'auto' as const,
+               left: el.x,
+               top: el.y,
+               ...pointerStyle
              };
 
-             const resizeHandle = isSelected ? (
-                 <div className="absolute bottom-0 right-0 w-6 h-6 bg-blue-500 border-2 border-white z-50 shadow-xl rounded-full"
-                    style={{ transform: 'translate(50%, 50%)', cursor: 'nwse-resize' }}
+             // Resize Handle (Only visible in Select Mode & Selected)
+             const resizeHandle = isSelected && tool === 'select' ? (
+                 <div className="absolute bottom-0 right-0 w-6 h-6 bg-blue-500 border-2 border-white z-50 shadow-xl rounded-full cursor-nwse-resize"
+                    style={{ transform: 'translate(50%, 50%)', pointerEvents: 'auto' }}
                  />
              ) : null;
 
+             if (el.type === 'pencil' && el.points) {
+                 const pathData = el.points.map((p, i) => (i === 0 ? `M ${p[0]} ${p[1]}` : `L ${p[0]} ${p[1]}`)).join(' ');
+                 return (
+                     <div key={uniqueKey} style={baseStyle}>
+                         <svg style={{ overflow: 'visible' }}>
+                             <path d={pathData} stroke={el.stroke} strokeWidth={3} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                         </svg>
+                         {/* Optional: Add selection box for pencil if needed */}
+                         {isSelected && <div className="absolute inset-0 border-2 border-blue-500 opacity-50 pointer-events-none" />}
+                     </div>
+                 );
+             }
+
              if (el.type === 'image') {
                 return (
-                    <div key={uniqueKey} onDoubleClick={(e) => e.stopPropagation()} style={baseStyle}>
+                    <div key={uniqueKey} onDoubleClick={(e) => e.stopPropagation()} 
+                         style={{ 
+                             ...baseStyle, 
+                             width: el.width, 
+                             height: el.height 
+                         }}>
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img src={el.content} alt="upload" className={`w-full h-full object-contain ${isSelected ? 'ring-2 ring-blue-500' : ''}`} draggable={false} />
                         {resizeHandle}
@@ -580,7 +620,23 @@ export default function Canvas() {
              if (el.type === 'note') {
                 return (
                     <div key={uniqueKey} onDoubleClick={(e) => handleDoubleClick(e, el.id, el.content || "")} 
-                        style={{ ...baseStyle, backgroundColor: el.fill, color: '#000', boxShadow: '4px 4px 10px rgba(0,0,0,0.2)', padding: '10px', fontSize: '18px', fontFamily: 'Comic Sans MS, sans-serif', border: isSelected ? '2px solid #3b82f6' : 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', overflow: 'hidden' }}>
+                        style={{ 
+                            ...baseStyle, 
+                            width: el.width, 
+                            height: el.height,
+                            backgroundColor: el.fill, 
+                            color: '#000', 
+                            boxShadow: '4px 4px 10px rgba(0,0,0,0.2)', 
+                            padding: '10px', 
+                            fontSize: '18px', 
+                            fontFamily: 'Comic Sans MS, sans-serif', 
+                            border: isSelected ? '2px solid #3b82f6' : 'none', 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            justifyContent: 'center', 
+                            textAlign: 'center', 
+                            overflow: 'hidden' 
+                        }}>
                         {el.content} 
                         {resizeHandle} 
                     </div>
@@ -588,11 +644,43 @@ export default function Canvas() {
              }
 
              if (el.type === 'text') {
-                return ( <div key={uniqueKey} onDoubleClick={(e) => handleDoubleClick(e, el.id, el.content || "")} style={{ ...baseStyle, border: isSelected ? '1px solid #3b82f6' : 'none', fontSize: '24px', fontFamily: 'sans-serif', padding: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', whiteSpace: 'pre-wrap' }}>{el.content} {resizeHandle}</div> );
+                return ( 
+                    <div key={uniqueKey} onDoubleClick={(e) => handleDoubleClick(e, el.id, el.content || "")} 
+                         style={{ 
+                             ...baseStyle, 
+                             border: isSelected ? '1px solid #3b82f6' : 'none', 
+                             fontSize: '24px', 
+                             fontFamily: 'sans-serif', 
+                             padding: '4px', 
+                             display: 'flex', 
+                             alignItems: 'center', 
+                             justifyContent: 'center', 
+                             whiteSpace: 'pre-wrap',
+                             color: el.stroke
+                         }}>
+                        {el.content} 
+                        {resizeHandle}
+                    </div> 
+                );
              }
 
+             // Rectangle / Circle
              return ( 
-                 <div key={uniqueKey} onDoubleClick={(e) => e.stopPropagation()} className={`absolute bg-transparent ${isSelected ? 'ring-2 ring-blue-500 shadow-xl' : ''}`} style={{ ...baseStyle, borderWidth: '2px', borderStyle: 'solid', borderRadius: el.type === 'circle' ? '50%' : '0%' }}>
+                 <div key={uniqueKey} onDoubleClick={(e) => e.stopPropagation()} 
+                      className={`absolute bg-transparent ${isSelected ? 'ring-2 ring-blue-500 shadow-xl' : ''}`} 
+                      style={{ 
+                          ...baseStyle, 
+                          width: el.width, 
+                          height: el.height,
+                          left: Math.min(el.x, el.x + el.width), // Override baseStyle left for shapes that might have negative width
+                          top: Math.min(el.y, el.y + el.height), // Override baseStyle top
+                          width: Math.abs(el.width),
+                          height: Math.abs(el.height),
+                          borderWidth: '2px', 
+                          borderStyle: 'solid', 
+                          borderColor: el.stroke,
+                          borderRadius: el.type === 'circle' ? '50%' : '0%' 
+                      }}>
                     {resizeHandle} 
                  </div> 
              );
