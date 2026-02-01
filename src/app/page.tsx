@@ -3,14 +3,17 @@
 import { RoomProvider } from "@/liveblocks.config";
 import Canvas from "@/components/canvas/Canvas";
 import { ClientSideSuspense } from "@liveblocks/react";
-import { LiveList } from "@liveblocks/client"; // Import this
+import { LiveList } from "@liveblocks/client";
 
 export default function Home() {
   return (
     <RoomProvider 
-      id="my-room-final-v1" 
-      initialPresence={{ cursor: null, selection: [] }} 
-      initialStorage={{ elements: new LiveList([]) }} // Explicit initialization 
+     id="whiteboard-room-FINAL-v99"
+      initialPresence={{ cursor: null, selection: [] }}
+      initialStorage={{ 
+        elements: new LiveList([]),
+        messages: new LiveList([]) // <--- Properly initialized inside the object
+      }} 
     >
       <ClientSideSuspense fallback={<div className="text-white flex items-center justify-center h-screen">Loading Board...</div>}>
         {() => <Canvas />}
