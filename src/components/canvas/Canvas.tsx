@@ -30,7 +30,6 @@ interface Message {
   user: string;
   text: string;
   color: string;
-  timestamp: number;
 }
 
 export default function Canvas() {
@@ -669,8 +668,6 @@ export default function Canvas() {
                       className={`absolute bg-transparent ${isSelected ? 'ring-2 ring-blue-500 shadow-xl' : ''}`} 
                       style={{ 
                           ...baseStyle, 
-                          width: el.width, 
-                          height: el.height,
                           left: Math.min(el.x, el.x + el.width), // Override baseStyle left for shapes that might have negative width
                           top: Math.min(el.y, el.y + el.height), // Override baseStyle top
                           width: Math.abs(el.width),
