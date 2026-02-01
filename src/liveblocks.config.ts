@@ -2,7 +2,7 @@ import { createClient, LiveList } from "@liveblocks/client";
 import { createRoomContext } from "@liveblocks/react";
 
 const client = createClient({
-  
+
   publicApiKey: "pk_dev_atzRSv6JNUP3WPjvcQ2njFRZIRWMbX2SZ39cCt19iYZ_b0NC3h4ZqjKnwxswCKb8",
 });
 
@@ -25,4 +25,5 @@ export const {
   useUndo,
   useRedo,
   useMyPresence,
+  useHistory,
 } = createRoomContext<Presence, Storage>(client);

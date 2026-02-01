@@ -6,7 +6,7 @@ import {
   StickyNote, Image as ImageIcon, Sun, Moon, MessageCircle, X, Send, 
   User, Check 
 } from 'lucide-react';
-import { useStorage, useMutation, useUndo, useRedo, useOthers, useMyPresence } from "@/liveblocks.config";
+import { useStorage, useMutation, useUndo, useRedo, useOthers, useMyPresence, useHistory } from "@/liveblocks.config";
 import { toPng } from 'html-to-image';
 import Cursor from './Cursor';
 
@@ -49,16 +49,22 @@ export default function Canvas() {
   
   const undo = useUndo();
   const redo = useRedo();
+  const history = useHistory();
 
   // --- MUTATIONS ---
   const addElement = useMutation(({ storage }, newShape: Layer) => {
     const existingElements = storage.get("elements");
-    if (existingElements) existingElements.push(newShape);
+    // Safety check: Stop if storage isn't loaded yet
+    if (!existingElements) return;
+    
+    existingElements.push(newShape);
   }, []);
 
   const updateElement = useMutation(({ storage }, { id, updates }: { id: string; updates: Partial<Layer> }) => {
     const liveElements = storage.get("elements");
+    // Safety check: Stop if storage isn't loaded yet
     if (!liveElements) return;
+    
     const index = liveElements.findIndex((el) => el.id === id);
     if (index !== -1) {
       liveElements.set(index, { ...liveElements.get(index), ...updates });
@@ -67,7 +73,9 @@ export default function Canvas() {
 
   const deleteElement = useMutation(({ storage }, id: string) => {
     const liveElements = storage.get("elements");
+    // Safety check: Stop if storage isn't loaded yet
     if (!liveElements) return;
+    
     const index = liveElements.findIndex((el) => el.id === id);
     if (index !== -1) liveElements.delete(index);
   }, []);
@@ -90,6 +98,7 @@ export default function Canvas() {
             user: user, 
             text: text,
             color: userColor,
+            timestamp: Date.now()
         });
     }
   }, []);
@@ -150,7 +159,7 @@ export default function Canvas() {
       .catch((err) => console.error(err));
   }, [isDarkMode]);
 
-  // --- IMAGE COMPRESSION & UPLOAD (MANDATORY REQUIREMENT) ---
+  // --- IMAGE COMPRESSION & UPLOAD (ULTRA-AGGRESSIVE) ---
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -161,8 +170,8 @@ export default function Canvas() {
       if (result) {
         const img = new Image();
         img.onload = () => {
-            // Requirement: Max width 600px
-            const maxSize = 600;
+            // Requirement: Max width 300px (Ultra-Aggressive Compression)
+            const maxSize = 300;
             let width = img.width;
             let height = img.height;
             
@@ -180,8 +189,8 @@ export default function Canvas() {
             if(ctx) {
                 ctx.drawImage(img, 0, 0, width, height);
                 
-                // Requirement: Convert to JPEG with 0.5 quality
-                const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.5); 
+                // Requirement: Convert to JPEG with 0.3 quality
+                const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.3); 
 
                 const startX = (window.innerWidth / 2 - camera.x) / camera.zoom;
                 const startY = (window.innerHeight / 2 - camera.y) / camera.zoom;
@@ -256,6 +265,9 @@ export default function Canvas() {
 
   // --- POINTER EVENTS ---
   const handlePointerDown = (e: React.PointerEvent) => {
+    // Start history batch
+    history.pause();
+
     const { x, y } = screenToWorld(e.clientX, e.clientY);
 
     // 0. Pan / Middle Click
@@ -366,6 +378,9 @@ export default function Canvas() {
   };
 
   const handlePointerUp = () => {
+    // End history batch
+    history.resume();
+
     setDrawingId(null);
     setIsDragging(false);
     setIsPanning(false);

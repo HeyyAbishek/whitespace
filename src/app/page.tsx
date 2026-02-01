@@ -8,7 +8,7 @@ import { LiveList } from "@liveblocks/client";
 export default function Home() {
   return (
     <RoomProvider 
-     id="whiteboard-room-FINAL-v99"
+     id="whiteboard-rescue-mission-v1"
       initialPresence={{ cursor: null, selection: [] }}
       initialStorage={{ 
         elements: new LiveList([]),
