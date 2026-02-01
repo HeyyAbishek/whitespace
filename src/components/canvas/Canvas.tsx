@@ -95,7 +95,6 @@ export default function Canvas() {
             user: user, 
             text: text,
             color: userColor,
-            timestamp: Date.now()
         });
     }
   }, []);
