@@ -149,19 +149,33 @@ export default function Canvas() {
     if (liveElements) while (liveElements.length > 0) liveElements.delete(0);
   }, []);
 
-  // --- SEND MESSAGE ---
+  // --- NEW: CLEAR CHAT ---
+  const clearChat = useMutation(({ storage }) => {
+    const liveMessages = storage.get("messages");
+    if (liveMessages) {
+        while (liveMessages.length > 0) {
+            liveMessages.delete(0);
+        }
+    }
+  }, []);
+
+  // --- SEND MESSAGE (Safe & Robust) ---
   const sendMessage = useMutation(({ storage }, { text, user }: { text: string, user: string }) => {
     if (!text.trim()) return;
+    
     const colors = ['#ef4444', '#f97316', '#f59e0b', '#84cc16', '#06b6d4', '#3b82f6', '#8b5cf6', '#d946ef'];
     const userColor = colors[user.length % colors.length];
     
     let liveMessages = storage.get("messages");
+    
+    // Auto-create list if missing (Lazy Init)
     // @ts-ignore 
     if (!liveMessages) {
         // @ts-ignore
         storage.set("messages", new LiveList([]));
         liveMessages = storage.get("messages");
     }
+
     if (liveMessages) {
         liveMessages.push({ user, text, color: userColor });
     }
@@ -257,8 +271,7 @@ export default function Canvas() {
     const el = elements.find(el => el.id === id);
     if (!el) return;
 
-    // FIX: Pause history so resizing acts as ONE undoable action
-    history.pause();
+    history.pause(); // Fix undo history for resize
 
     setSelectedId(id);
     setIsResizing(true);
@@ -438,7 +451,6 @@ export default function Canvas() {
   };
 
   return (
-    // MAIN WRAPPER: Fixed inset-0 prevents global bounce/scroll.
     <div className={`fixed inset-0 w-full h-full overflow-hidden ${bgClass}`}>
       
       {/* SCROLLBAR STYLE */}
@@ -464,8 +476,7 @@ export default function Canvas() {
         }
       `}</style>
 
-      {/* --- LAYER 1: UI OVERLAYS (Toolbar, Chat) --- */}
-      {/* These sit ON TOP (z-[100/999]) and are FULLY INTERACTIVE */}
+      {/* --- LAYER 1: UI OVERLAYS --- */}
       
       {editingId && (
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm pointer-events-auto">
@@ -510,7 +521,7 @@ export default function Canvas() {
         <button onClick={handleExport} className={`p-2 shrink-0 rounded ${isDarkMode ? 'hover:bg-green-900/30' : 'hover:bg-green-100'} text-green-500`}><Camera size={20} /></button>
       </div>
 
-      {/* CHAT SIDEBAR */}
+      {/* CHAT SIDEBAR - FIXED SCROLLING */}
       {isChatOpen && (
         <div 
           className={`fixed right-4 top-20 bottom-20 w-80 flex flex-col rounded-xl border shadow-2xl z-[999] pointer-events-auto touch-auto overflow-hidden ${isDarkMode ? 'bg-[#1e1e1e] border-[#333]' : 'bg-white'}`}
@@ -518,12 +529,18 @@ export default function Canvas() {
           onMouseDown={(e) => e.stopPropagation()}
           onWheel={(e) => e.stopPropagation()}
         >
+            {/* Header with Clear Button */}
             <div className="p-3 border-b border-gray-700 flex justify-between items-center shrink-0">
                 <h3 className="font-bold">Live Chat</h3>
-                <button onClick={() => setIsChatOpen(false)}><X size={18}/></button>
+                <div className="flex gap-2">
+                    <button onClick={() => { if(confirm('Clear chat history?')) clearChat(); }} className="hover:text-red-500" title="Clear Chat">
+                        <Trash2 size={16} />
+                    </button>
+                    <button onClick={() => setIsChatOpen(false)}><X size={18}/></button>
+                </div>
             </div>
             
-            {/* MESSAGES AREA - touch-auto allows scrolling here */}
+            {/* MESSAGES AREA */}
             <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2 chat-scroll select-auto touch-auto">
                 {messages.map((msg, i) => (
                     <div key={i} className="flex flex-col select-none">
@@ -555,7 +572,6 @@ export default function Canvas() {
       )}
 
       {/* --- LAYER 2: CANVAS (Handles Drawing/Resizing) --- */}
-      {/* FIX: touch-none ONLY applied here, so it doesn't block the sidebar scrolling */}
       <div 
         className={`absolute inset-0 w-full h-full block touch-none select-none z-0 ${tool === 'select' ? 'cursor-default' : 'cursor-crosshair'}`}
         onPointerDown={handlePointerDown}
