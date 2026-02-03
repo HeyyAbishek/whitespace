@@ -251,7 +251,6 @@ export default function Canvas() {
 
   // 2. Main Pointer Down (Select/Draw)
   const handlePointerDown = (e: React.PointerEvent) => {
-    history.pause();
     const { x, y } = screenToWorld(e.clientX, e.clientY);
 
     if (e.button === 1 || isSpacePressed) { setIsPanning(true); return; }
@@ -271,9 +270,11 @@ export default function Canvas() {
            setTool('select'); return;
        }
        if (tool === 'pencil') {
+           history.pause();
            addElement({ ...newLayer, width: 0, height: 0, points: [[0, 0], [0, 0]] });
            setDrawingId(newId); return;
        }
+       history.pause();
        addElement(newLayer);
        setDrawingId(newId);
        return;
@@ -286,6 +287,7 @@ export default function Canvas() {
       });
 
       if (clickedShape) {
+        history.pause();
         setSelectedId(clickedShape.id);
         setIsDragging(true);
         const { x: ex, y: ey } = normalizeShape(clickedShape);
