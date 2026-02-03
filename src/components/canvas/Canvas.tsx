@@ -7,6 +7,7 @@ import {
   User, Pencil
 } from 'lucide-react';
 import { useStorage, useMutation, useUndo, useRedo, useOthers, useMyPresence, useHistory } from "@/liveblocks.config";
+import { LiveList } from "@liveblocks/client"; 
 import { toPng } from 'html-to-image';
 import Cursor from './Cursor';
 
@@ -33,7 +34,7 @@ interface Message {
   color: string;
 }
 
-// --- NORMALIZATION HELPER (CRITICAL FOR MATH) ---
+// --- NORMALIZATION HELPER ---
 function normalizeShape(el: Layer) {
     const x = el.width < 0 ? el.x + el.width : el.x;
     const y = el.height < 0 ? el.y + el.height : el.y;
@@ -50,8 +51,7 @@ export default function Canvas() {
   const storageElements = useStorage((root) => root.elements);
   const elements = (storageElements || []) as Layer[];
   
-  // --- SAFE RENDERING (DEDUPLICATION) ---
-  // Fixes "Encountered two children with the same key" error
+  // Safe Rendering
   const uniqueElements = React.useMemo(() => {
     const seen = new Set();
     return elements.filter(el => {
@@ -80,7 +80,7 @@ export default function Canvas() {
   const [isPanning, setIsPanning] = useState(false);
   const [isSpacePressed, setIsSpacePressed] = useState(false);
   
-  // RESIZE STATE (The Brain)
+  // RESIZE STATE
   const [isResizing, setIsResizing] = useState(false);
   const [activeHandle, setActiveHandle] = useState<HandleType | null>(null);
   const [resizeStart, setResizeStart] = useState<{ 
@@ -91,7 +91,7 @@ export default function Canvas() {
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 }); 
   const [drawingId, setDrawingId] = useState<string | null>(null);
 
-  // UI State
+  // UI STATE
   const [username, setUsername] = useState("Guest");
   const [showNameModal, setShowNameModal] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -102,6 +102,13 @@ export default function Canvas() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // --- HELPERS ---
+  const screenToWorld = (clientX: number, clientY: number) => {
+    return {
+      x: (clientX - camera.x) / camera.zoom,
+      y: (clientY - camera.y) / camera.zoom
+    };
+  };
+
   const findIndexById = (liveList: any, targetId: string) => {
     if (!liveList) return -1;
     for (let i = 0; i < liveList.length; i++) {
@@ -110,13 +117,6 @@ export default function Canvas() {
         if (itemId === targetId) return i;
     }
     return -1;
-  };
-
-  const screenToWorld = (clientX: number, clientY: number) => {
-    return {
-      x: (clientX - camera.x) / camera.zoom,
-      y: (clientY - camera.y) / camera.zoom
-    };
   };
 
   // --- MUTATIONS ---
@@ -129,7 +129,11 @@ export default function Canvas() {
     const liveElements = storage.get("elements");
     if (!liveElements) return;
     const index = findIndexById(liveElements, id);
-    if (index !== -1) liveElements.set(index, { ...liveElements.get(index), ...updates });
+    if (index !== -1) {
+        const current = liveElements.get(index);
+        const currentObj = current?.toObject ? current.toObject() : current;
+        liveElements.set(index, { ...currentObj, ...updates });
+    }
   }, []);
 
   const deleteElement = useMutation(({ storage }, id: string) => {
@@ -145,12 +149,22 @@ export default function Canvas() {
     if (liveElements) while (liveElements.length > 0) liveElements.delete(0);
   }, []);
 
+  // --- SEND MESSAGE ---
   const sendMessage = useMutation(({ storage }, { text, user }: { text: string, user: string }) => {
     if (!text.trim()) return;
     const colors = ['#ef4444', '#f97316', '#f59e0b', '#84cc16', '#06b6d4', '#3b82f6', '#8b5cf6', '#d946ef'];
     const userColor = colors[user.length % colors.length];
-    const liveMessages = storage.get("messages");
-    if (liveMessages) liveMessages.push({ user, text, color: userColor });
+    
+    let liveMessages = storage.get("messages");
+    // @ts-ignore 
+    if (!liveMessages) {
+        // @ts-ignore
+        storage.set("messages", new LiveList([]));
+        liveMessages = storage.get("messages");
+    }
+    if (liveMessages) {
+        liveMessages.push({ user, text, color: userColor });
+    }
   }, []);
 
   const handleExport = useCallback(() => {
@@ -208,7 +222,14 @@ export default function Canvas() {
     }
   };
 
-  useEffect(() => { if (isChatOpen) chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, isChatOpen]);
+  // --- SCROLL CHAT ---
+  useEffect(() => {
+    if (isChatOpen) {
+       setTimeout(() => {
+           chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+       }, 100);
+    }
+  }, [messages, isChatOpen]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -230,26 +251,25 @@ export default function Canvas() {
   }, [selectedId, deleteElement, undo, redo, editingId, showNameModal]);
 
   // --- HANDLERS ---
-
-  // 1. Start Resize
   const handleResizeStart = (e: React.PointerEvent, id: string, handle: HandleType) => {
     e.stopPropagation();
     e.preventDefault();
     const el = elements.find(el => el.id === id);
     if (!el) return;
 
+    // FIX: Pause history so resizing acts as ONE undoable action
+    history.pause();
+
     setSelectedId(id);
     setIsResizing(true);
     setActiveHandle(handle);
     
-    // Use Pointer Position directly from event for start reference
     const { x: pointerX, y: pointerY } = screenToWorld(e.clientX, e.clientY);
     const { x, y, width, height } = normalizeShape(el);
 
     setResizeStart({ x, y, width, height, startX: pointerX, startY: pointerY });
   };
 
-  // 2. Main Pointer Down (Select/Draw)
   const handlePointerDown = (e: React.PointerEvent) => {
     const { x, y } = screenToWorld(e.clientX, e.clientY);
 
@@ -299,7 +319,6 @@ export default function Canvas() {
     }
   };
 
-  // 3. Pointer Move (Resize Logic Here)
   const handlePointerMove = (e: React.PointerEvent) => {
     const { x, y } = screenToWorld(e.clientX, e.clientY);
     updateMyPresence({ cursor: { x, y } });
@@ -309,40 +328,34 @@ export default function Canvas() {
       return;
     }
 
-    // --- RESIZE LOGIC START ---
     if (isResizing && selectedId && resizeStart && activeHandle) {
-        const dx = x - resizeStart.startX; // Delta X from Start Mouse
-        const dy = y - resizeStart.startY; // Delta Y from Start Mouse
+        const dx = x - resizeStart.startX;
+        const dy = y - resizeStart.startY;
 
         let newX = resizeStart.x;
         let newY = resizeStart.y;
         let newW = resizeStart.width;
         let newH = resizeStart.height;
 
-        // Horizontal Logic
         if (['r', 'tr', 'br'].includes(activeHandle)) {
             newW = Math.max(10, resizeStart.width + dx);
         } else if (['l', 'tl', 'bl'].includes(activeHandle)) {
             newW = Math.max(10, resizeStart.width - dx);
             newX = resizeStart.x + dx;
-            // Clamp X if width is minimum
             if (newW === 10) newX = resizeStart.x + resizeStart.width - 10;
         }
 
-        // Vertical Logic
         if (['b', 'bl', 'br'].includes(activeHandle)) {
             newH = Math.max(10, resizeStart.height + dy);
         } else if (['t', 'tl', 'tr'].includes(activeHandle)) {
             newH = Math.max(10, resizeStart.height - dy);
             newY = resizeStart.y + dy;
-            // Clamp Y if height is minimum
             if (newH === 10) newY = resizeStart.y + resizeStart.height - 10;
         }
 
         updateElement({ id: selectedId, updates: { x: newX, y: newY, width: newW, height: newH } });
         return;
     }
-    // --- RESIZE LOGIC END ---
 
     if (drawingId) {
       const el = elements.find(e => e.id === drawingId);
@@ -395,7 +408,6 @@ export default function Canvas() {
   const toolbarClass = isDarkMode ? 'bg-[#1e1e1e] border-[#333]' : 'bg-white border-gray-200 shadow-xl';
   const btnClass = (active: boolean) => `p-2 shrink-0 rounded transition-colors ${active ? 'bg-blue-600 text-white' : isDarkMode ? 'hover:bg-[#333] text-gray-400' : 'hover:bg-gray-100 text-gray-600'}`;
 
-  // Helper for rendering the 8 handles
   const renderHandles = (el: Layer, normalized: { x: number, y: number, width: number, height: number }) => {
       const { width: w, height: h } = normalized;
       const handleSize = 10;
@@ -418,7 +430,7 @@ export default function Canvas() {
               className="absolute bg-white border border-blue-500 z-50"
               style={{
                   left: h.x, top: h.y, width: handleSize, height: handleSize,
-                  cursor: `cursor-${h.cursor}`, pointerEvents: 'auto'
+                  cursor: h.cursor, pointerEvents: 'auto'
               }}
               onPointerDown={(e) => handleResizeStart(e, el.id, h.type)}
           />
@@ -426,11 +438,37 @@ export default function Canvas() {
   };
 
   return (
-    <div className={`w-screen h-screen overflow-hidden relative select-none ${bgClass} ${isSpacePressed || isPanning ? 'cursor-grab' : ''}`}>
+    // MAIN WRAPPER: Fixed inset-0 prevents global bounce/scroll.
+    <div className={`fixed inset-0 w-full h-full overflow-hidden ${bgClass}`}>
       
-      {/* MODALS */}
+      {/* SCROLLBAR STYLE */}
+      <style>{`
+        .chat-scroll {
+          scrollbar-width: thin;
+          scrollbar-color: #888 transparent;
+          -webkit-overflow-scrolling: touch;
+        }
+        .chat-scroll::-webkit-scrollbar {
+          width: 8px;
+          display: block;
+        }
+        .chat-scroll::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        .chat-scroll::-webkit-scrollbar-thumb {
+          background-color: #888;
+          border-radius: 4px;
+        }
+        .chat-scroll::-webkit-scrollbar-thumb:hover {
+          background-color: #666;
+        }
+      `}</style>
+
+      {/* --- LAYER 1: UI OVERLAYS (Toolbar, Chat) --- */}
+      {/* These sit ON TOP (z-[100/999]) and are FULLY INTERACTIVE */}
+      
       {editingId && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm pointer-events-auto">
              <div className={`p-6 rounded-xl shadow-2xl border w-96 ${isDarkMode ? 'bg-[#1e1e1e] border-[#333]' : 'bg-white border-gray-200'}`}>
                 <h2 className="text-lg font-bold mb-4">Edit Content</h2>
                 <textarea autoFocus rows={4} className={`w-full p-2 rounded border mb-4 resize-none ${isDarkMode ? 'bg-[#2a2a2a] border-[#444] text-white' : 'bg-gray-50 border-gray-300 text-black'}`} value={tempText} onChange={e => setTempText(e.target.value)} onKeyDown={e => { if(e.key === 'Enter' && !e.shiftKey) saveText(); }} />
@@ -439,7 +477,7 @@ export default function Canvas() {
           </div>
       )}
       {showNameModal && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm pointer-events-auto">
              <div className={`p-6 rounded-xl shadow-2xl border w-80 text-center ${isDarkMode ? 'bg-[#1e1e1e] border-[#333]' : 'bg-white border-gray-200'}`}>
                 <h2 className="text-lg font-bold mb-4">Set Your Name</h2>
                 <input autoFocus placeholder="Enter name..." className={`w-full p-2 rounded border mb-4 text-center ${isDarkMode ? 'bg-[#2a2a2a] border-[#444] text-white' : 'bg-gray-50 border-gray-300 text-black'}`} value={username === "Guest" ? "" : username} onChange={e => setUsername(e.target.value)} onKeyDown={e => { if(e.key === 'Enter') setShowNameModal(false); }} />
@@ -448,8 +486,8 @@ export default function Canvas() {
           </div>
       )}
 
-      {/* TOOLBAR */}
-      <div className={`fixed top-4 left-1/2 -translate-x-1/2 p-2 rounded-lg flex gap-2 z-50 border items-center ${toolbarClass}`}>
+      {/* Toolbar */}
+      <div className={`fixed top-4 left-1/2 -translate-x-1/2 p-2 rounded-lg flex gap-2 z-50 border items-center select-none pointer-events-auto ${toolbarClass}`}>
         <button onClick={() => setTool('select')} className={btnClass(tool === 'select')}><MousePointer2 size={20} /></button>
         <button onClick={() => setTool('pencil')} className={btnClass(tool === 'pencil')}><Pencil size={20} /></button>
         <button onClick={() => setTool('rectangle')} className={btnClass(tool === 'rectangle')}><Square size={20} /></button>
@@ -472,18 +510,54 @@ export default function Canvas() {
         <button onClick={handleExport} className={`p-2 shrink-0 rounded ${isDarkMode ? 'hover:bg-green-900/30' : 'hover:bg-green-100'} text-green-500`}><Camera size={20} /></button>
       </div>
 
-      {/* CHAT */}
+      {/* CHAT SIDEBAR */}
       {isChatOpen && (
-        <div className={`fixed right-4 top-20 bottom-20 w-80 flex flex-col rounded-xl border shadow-2xl pointer-events-auto z-50 ${isDarkMode ? 'bg-[#1e1e1e] border-[#333]' : 'bg-white'}`}>
-            <div className="p-3 border-b border-gray-700 flex justify-between items-center shrink-0"><h3 className="font-bold">Live Chat</h3><button onClick={() => setIsChatOpen(false)}><X size={18}/></button></div>
-            <div className="flex-1 overflow-y-auto min-h-0 p-3 space-y-2">{messages.map((msg, i) => (<div key={i} className="flex flex-col"><span className="text-xs font-bold opacity-75" style={{color: msg.color}}>{msg.user}</span><div className={`p-2 rounded text-sm break-words ${isDarkMode ? 'bg-[#333] text-white' : 'bg-gray-100 text-black'}`}>{msg.text}</div></div>))}<div ref={chatEndRef}/></div>
-            <div className="p-3 border-t border-gray-700 shrink-0 flex gap-2"><input className={`flex-1 p-2 rounded border ${isDarkMode ? 'bg-[#2a2a2a] border-[#444] text-white' : 'bg-white text-black'}`} placeholder="Type..." value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && (sendMessage({ text: chatInput, user: username }), setChatInput(''))} /><button onClick={() => (sendMessage({ text: chatInput, user: username }), setChatInput(''))} className="p-2 bg-blue-600 text-white rounded hover:bg-blue-700"><Send size={16}/></button></div>
+        <div 
+          className={`fixed right-4 top-20 bottom-20 w-80 flex flex-col rounded-xl border shadow-2xl z-[999] pointer-events-auto touch-auto overflow-hidden ${isDarkMode ? 'bg-[#1e1e1e] border-[#333]' : 'bg-white'}`}
+          onPointerDown={(e) => e.stopPropagation()} 
+          onMouseDown={(e) => e.stopPropagation()}
+          onWheel={(e) => e.stopPropagation()}
+        >
+            <div className="p-3 border-b border-gray-700 flex justify-between items-center shrink-0">
+                <h3 className="font-bold">Live Chat</h3>
+                <button onClick={() => setIsChatOpen(false)}><X size={18}/></button>
+            </div>
+            
+            {/* MESSAGES AREA - touch-auto allows scrolling here */}
+            <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2 chat-scroll select-auto touch-auto">
+                {messages.map((msg, i) => (
+                    <div key={i} className="flex flex-col select-none">
+                        <span className="text-xs font-bold opacity-75" style={{color: msg.color}}>{msg.user}</span>
+                        <div className={`p-2 rounded text-sm break-words ${isDarkMode ? 'bg-[#333] text-white' : 'bg-gray-100 text-black'}`}>
+                            {msg.text}
+                        </div>
+                    </div>
+                ))}
+                <div ref={chatEndRef}/>
+            </div>
+
+            <div className="p-3 border-t border-gray-700 shrink-0 flex gap-2">
+                <input 
+                    className={`flex-1 p-2 rounded border ${isDarkMode ? 'bg-[#2a2a2a] border-[#444] text-white' : 'bg-white text-black'}`} 
+                    placeholder="Type..." 
+                    value={chatInput} 
+                    onChange={e => setChatInput(e.target.value)} 
+                    onKeyDown={e => e.key === 'Enter' && (sendMessage({ text: chatInput, user: username }), setChatInput(''))} 
+                />
+                <button 
+                    onClick={() => (sendMessage({ text: chatInput, user: username }), setChatInput(''))} 
+                    className="p-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+                >
+                    <Send size={16}/>
+                </button>
+            </div>
         </div>
       )}
 
-      {/* CANVAS */}
+      {/* --- LAYER 2: CANVAS (Handles Drawing/Resizing) --- */}
+      {/* FIX: touch-none ONLY applied here, so it doesn't block the sidebar scrolling */}
       <div 
-        className={`w-full h-full block touch-none ${tool === 'select' ? 'cursor-default' : 'cursor-crosshair'}`}
+        className={`absolute inset-0 w-full h-full block touch-none select-none z-0 ${tool === 'select' ? 'cursor-default' : 'cursor-crosshair'}`}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
@@ -496,14 +570,12 @@ export default function Canvas() {
            {uniqueElements.map((el) => {
              const uniqueKey = el.id; 
              const isSelected = selectedId === el.id;
-             // Normalize for consistent rendering (Fixes jumpy handles)
              const normalized = normalizeShape(el);
              const { x, y, width, height } = normalized;
              
              const pointerStyle = { pointerEvents: tool === 'select' ? 'auto' : 'none', cursor: tool === 'select' ? 'move' : 'default', zIndex: isSelected ? 50 : 1 } as const;
              const baseStyle = { position: 'absolute' as const, left: x, top: y, ...pointerStyle };
 
-             // --- SELECTION UI ---
              const selectionBorderRadius = el.type === 'circle' ? '50%' : '0%';
              const SelectionBox = isSelected && tool === 'select' ? (
                  <div className="absolute -inset-1 border-2 border-blue-500 border-dashed pointer-events-none"
