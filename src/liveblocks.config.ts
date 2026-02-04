@@ -2,8 +2,7 @@ import { createClient, LiveList } from "@liveblocks/client";
 import { createRoomContext } from "@liveblocks/react";
 
 const client = createClient({
-
-  publicApiKey: "pk_dev_atzRSv6JNUP3WPjvcQ2njFRZIRWMbX2SZ39cCt19iYZ_b0NC3h4ZqjKnwxswCKb8",
+  authEndpoint: "/api/liveblocks-auth",
 });
 
 type Storage = {
@@ -16,6 +15,15 @@ type Presence = {
   selection: string[];
 };
 
+type UserMeta = {
+  id: string;
+  info: {
+    name: string;
+    picture: string;
+    id: string;
+  };
+};
+
 export const {
   RoomProvider,
   useStorage,
@@ -26,4 +34,4 @@ export const {
   useRedo,
   useMyPresence,
   useHistory,
-} = createRoomContext<Presence, Storage>(client);
+} = createRoomContext<Presence, Storage, UserMeta>(client);

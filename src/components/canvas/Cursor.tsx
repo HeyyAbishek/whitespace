@@ -5,12 +5,14 @@ type Props = {
   x: number;
   y: number;
   connectionId: number;
+  name?: string;
+  picture?: string;
 };
 
 // Generate a consistent color based on connectionId
 const COLORS = ["#DC2626", "#D97706", "#059669", "#7C3AED", "#DB2777"];
 
-export default function Cursor({ x, y, connectionId }: Props) {
+export default function Cursor({ x, y, connectionId, name, picture }: Props) {
   const color = COLORS[connectionId % COLORS.length];
 
   return (
@@ -23,10 +25,17 @@ export default function Cursor({ x, y, connectionId }: Props) {
         style={{ fill: color, color: color }} 
       />
       <div 
-        className="absolute left-5 top-5 px-1.5 py-0.5 rounded-md text-xs text-white font-semibold whitespace-nowrap" 
+        className="absolute left-5 top-5 px-1.5 py-0.5 rounded-md text-xs text-white font-semibold whitespace-nowrap flex items-center gap-1" 
         style={{ backgroundColor: color }}
       >
-        User {connectionId}
+        {picture && (
+          <img 
+            src={picture} 
+            alt={name} 
+            className="w-4 h-4 rounded-full"
+          />
+        )}
+        {name || `User ${connectionId}`}
       </div>
     </div>
   );

@@ -6,9 +6,10 @@ import {
   StickyNote, Image as ImageIcon, Sun, Moon, MessageCircle, X, Send, 
   User, Pencil
 } from 'lucide-react';
-import { useStorage, useMutation, useUndo, useRedo, useOthers, useMyPresence, useHistory } from "@/liveblocks.config";
+import { useStorage, useMutation, useUndo, useRedo, useOthers, useMyPresence, useHistory, useSelf } from "@/liveblocks.config";
 import { LiveList } from "@liveblocks/client"; 
 import { toPng } from 'html-to-image';
+import { UserButton } from "@clerk/nextjs";
 import Cursor from './Cursor';
 
 // --- TYPES ---
@@ -64,6 +65,7 @@ export default function Canvas() {
   const storageMessages = useStorage((root) => root.messages);
   const messages = (storageMessages || []) as Message[];
   const others = useOthers();
+  const currentUser = useSelf();
   const [myPresence, updateMyPresence] = useMyPresence();
   const undo = useUndo();
   const redo = useRedo();
@@ -93,6 +95,13 @@ export default function Canvas() {
 
   // UI STATE
   const [username, setUsername] = useState("Guest");
+
+  useEffect(() => {
+    if (currentUser?.info?.name) {
+      setUsername(currentUser.info.name);
+    }
+  }, [currentUser]);
+
   const [showNameModal, setShowNameModal] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [chatInput, setChatInput] = useState("");
@@ -508,7 +517,7 @@ export default function Canvas() {
         <button onClick={() => setTool('image')} className={btnClass(tool === 'image')}><ImageIcon size={20} /></button>
         <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleImageUpload} />
         <div className={`w-px h-6 mx-1 shrink-0 ${isDarkMode ? 'bg-[#333]' : 'bg-gray-300'}`} />
-        <button onClick={() => setShowNameModal(true)} className={`flex items-center gap-2 px-3 py-2 rounded font-medium text-sm transition-all ${isDarkMode ? 'bg-[#333] hover:bg-[#444] text-white' : 'bg-gray-100 hover:bg-gray-200 text-black'}`}><User size={16} />{username}</button>
+        <UserButton />
         <div className={`w-px h-6 mx-1 shrink-0 ${isDarkMode ? 'bg-[#333]' : 'bg-gray-300'}`} />
         <button onClick={undo} className={btnClass(false)}><Undo size={20} /></button>
         <button onClick={redo} className={btnClass(false)}><Redo size={20} /></button>
@@ -618,7 +627,7 @@ export default function Canvas() {
            })}
 
            <div className="cursor-overlay">
-               {others.map(({ connectionId, presence }) => presence?.cursor && <Cursor key={connectionId} x={presence.cursor.x} y={presence.cursor.y} connectionId={connectionId} /> )}
+               {others.map(({ connectionId, presence, info }) => presence?.cursor && <Cursor key={connectionId} x={presence.cursor.x} y={presence.cursor.y} connectionId={connectionId} name={info?.name} picture={info?.picture} /> )}
            </div>
         </div>
       </div>

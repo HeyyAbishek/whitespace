@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@liveblocks/client": "^3.13.3",
+    "@liveblocks/node": "^3.13.3",
     "@liveblocks/react": "^3.13.3",
     "@liveblocks/react-ui": "^3.13.3",
     "clsx": "^2.1.1",
