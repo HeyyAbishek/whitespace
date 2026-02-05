@@ -14,7 +14,6 @@ export async function POST(request: Request) {
   }
 
   // Identify the user and set their info for the session
-  // This info will be available to other users in the session
   const session = liveblocks.prepareSession(
     user.id,
     {
@@ -26,13 +25,9 @@ export async function POST(request: Request) {
     }
   );
 
-  // Give the user access to the room
-  // Since we don't have complex permissions yet, we allow full access
-  // In a real app, you might check if the user is allowed in this specific room
-  // const { room } = await request.json();
-  // session.allow(room, session.FULL_ACCESS);
-  
-  // For now, allow access to any room they try to join (simple wildcard)
+  // Allow access to the room
+  // In a real app, you'd check permissions here.
+  // For now, we allow full access to any room.
   session.allow("*", session.FULL_ACCESS);
 
   // Authorize the session and return the result

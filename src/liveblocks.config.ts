@@ -34,4 +34,5 @@ export const {
   useRedo,
   useMyPresence,
   useHistory,
+  useStatus, // Added useStatus
 } = createRoomContext<Presence, Storage, UserMeta>(client);

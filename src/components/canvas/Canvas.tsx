@@ -307,8 +307,9 @@ export default function Canvas() {
            addElement({ ...newLayer, width: 150, height: 40, content: "Double Click", stroke: isDarkMode?'#fff':'#000' });
            setTool('select'); return;
        }
+       // --- MODIFIED LINE BELOW ---
        if (tool === 'note') {
-           addElement({ ...newLayer, width: 200, height: 200, content: "Note", fill: '#facc15' });
+           addElement({ ...newLayer, width: 200, height: 200, content: "double click to edit note", fill: '#facc15' });
            setTool('select'); return;
        }
        if (tool === 'pencil') {
@@ -486,16 +487,8 @@ export default function Canvas() {
       `}</style>
 
       {/* --- LAYER 1: UI OVERLAYS --- */}
-      
-      {editingId && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm pointer-events-auto">
-             <div className={`p-6 rounded-xl shadow-2xl border w-96 ${isDarkMode ? 'bg-[#1e1e1e] border-[#333]' : 'bg-white border-gray-200'}`}>
-                <h2 className="text-lg font-bold mb-4">Edit Content</h2>
-                <textarea autoFocus rows={4} className={`w-full p-2 rounded border mb-4 resize-none ${isDarkMode ? 'bg-[#2a2a2a] border-[#444] text-white' : 'bg-gray-50 border-gray-300 text-black'}`} value={tempText} onChange={e => setTempText(e.target.value)} onKeyDown={e => { if(e.key === 'Enter' && !e.shiftKey) saveText(); }} />
-                <div className="flex justify-end gap-2"><button onClick={() => setEditingId(null)} className="px-4 py-2 rounded text-gray-500 hover:bg-gray-100/10">Cancel</button><button onClick={saveText} className="px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700">Save</button></div>
-             </div>
-          </div>
-      )}
+      {/* MODAL REMOVED FOR INLINE EDITING */}
+
       {showNameModal && (
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm pointer-events-auto">
              <div className={`p-6 rounded-xl shadow-2xl border w-80 text-center ${isDarkMode ? 'bg-[#1e1e1e] border-[#333]' : 'bg-white border-gray-200'}`}>
@@ -595,6 +588,7 @@ export default function Canvas() {
            {uniqueElements.map((el) => {
              const uniqueKey = el.id; 
              const isSelected = selectedId === el.id;
+             const isEditing = editingId === el.id; // CHECK IF EDITING
              const normalized = normalizeShape(el);
              const { x, y, width, height } = normalized;
              
@@ -602,12 +596,12 @@ export default function Canvas() {
              const baseStyle = { position: 'absolute' as const, left: x, top: y, ...pointerStyle };
 
              const selectionBorderRadius = el.type === 'circle' ? '50%' : '0%';
-             const SelectionBox = isSelected && tool === 'select' ? (
+             const SelectionBox = isSelected && tool === 'select' && !isEditing ? (
                  <div className="absolute -inset-1 border-2 border-blue-500 border-dashed pointer-events-none"
                       style={{ borderRadius: selectionBorderRadius }} />
              ) : null;
 
-             const Handles = isSelected && tool === 'select' ? renderHandles(el, normalized) : null;
+             const Handles = isSelected && tool === 'select' && !isEditing ? renderHandles(el, normalized) : null;
 
              if (el.type === 'pencil' && el.points) {
                  const pathData = el.points.map((p, i) => (i === 0 ? `M ${p[0]} ${p[1]}` : `L ${p[0]} ${p[1]}`)).join(' ');
@@ -620,8 +614,50 @@ export default function Canvas() {
              }
 
              if (el.type === 'image') return ( <div key={uniqueKey} onDoubleClick={(e) => e.stopPropagation()} style={{ ...baseStyle, width, height }}><img src={el.content} className={`w-full h-full object-contain`} draggable={false} />{SelectionBox}{Handles}</div> );
-             if (el.type === 'note') return ( <div key={uniqueKey} onDoubleClick={(e) => handleDoubleClick(e, el.id, el.content || "")} style={{ ...baseStyle, width, height, backgroundColor: el.fill, color: '#000', boxShadow: '4px 4px 10px rgba(0,0,0,0.2)', padding: '10px', fontSize: '18px', fontFamily: 'Comic Sans MS', border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', overflow: 'hidden' }}>{el.content}{SelectionBox}{Handles}</div> );
-             if (el.type === 'text') return ( <div key={uniqueKey} onDoubleClick={(e) => handleDoubleClick(e, el.id, el.content || "")} style={{ ...baseStyle, border: 'none', fontSize: '24px', fontFamily: 'sans-serif', padding: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', whiteSpace: 'pre-wrap', color: el.stroke }}>{el.content}{SelectionBox}{Handles}</div> );
+             
+             // --- INLINE EDITING FOR NOTE ---
+             if (el.type === 'note') {
+                return ( 
+                    <div key={uniqueKey} onDoubleClick={(e) => handleDoubleClick(e, el.id, el.content || "")} style={{ ...baseStyle, width, height, backgroundColor: el.fill, color: '#000', boxShadow: '4px 4px 10px rgba(0,0,0,0.2)', padding: '10px', fontSize: '18px', fontFamily: 'Comic Sans MS', border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', overflow: 'hidden' }}>
+                        {isEditing ? (
+                             <textarea 
+                                autoFocus
+                                value={tempText}
+                                onChange={(e) => setTempText(e.target.value)}
+                                onBlur={saveText}
+                                onKeyDown={(e) => { if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveText(); }}}
+                                onPointerDown={(e) => e.stopPropagation()} // CRITICAL: PREVENT DRAG
+                                className="w-full h-full bg-transparent border-none outline-none resize-none text-center font-[inherit] text-[inherit] p-0 overflow-hidden pointer-events-auto"
+                             />
+                        ) : (
+                             el.content
+                        )}
+                        {SelectionBox}{Handles}
+                    </div> 
+                );
+             }
+
+             // --- INLINE EDITING FOR TEXT ---
+             if (el.type === 'text') {
+                 return ( 
+                    <div key={uniqueKey} onDoubleClick={(e) => handleDoubleClick(e, el.id, el.content || "")} style={{ ...baseStyle, border: 'none', fontSize: '24px', fontFamily: 'sans-serif', padding: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', whiteSpace: 'pre-wrap', color: el.stroke }}>
+                        {isEditing ? (
+                             <textarea 
+                                autoFocus
+                                value={tempText}
+                                onChange={(e) => setTempText(e.target.value)}
+                                onBlur={saveText}
+                                onKeyDown={(e) => { if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveText(); }}}
+                                onPointerDown={(e) => e.stopPropagation()} // CRITICAL: PREVENT DRAG
+                                className="w-full h-full bg-transparent border-none outline-none resize-none text-center font-[inherit] text-[inherit] p-0 overflow-hidden pointer-events-auto"
+                             />
+                        ) : (
+                             el.content
+                        )}
+                        {SelectionBox}{Handles}
+                    </div> 
+                 );
+             }
 
              return ( <div key={uniqueKey} onDoubleClick={(e) => e.stopPropagation()} className={`absolute bg-transparent`} style={{ ...baseStyle, width, height, borderWidth: '2px', borderStyle: 'solid', borderColor: el.stroke, borderRadius: el.type === 'circle' ? '50%' : '0%' }}>{SelectionBox}{Handles} </div> );
            })}
