@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, memo } from 'react';
 import { 
   Square, Circle, Type, MousePointer2, Trash2, Undo, Redo, Camera, 
   StickyNote, Image as ImageIcon, Sun, Moon, MessageCircle, X, Send, 
@@ -10,7 +10,30 @@ import { useStorage, useMutation, useUndo, useRedo, useOthers, useMyPresence, us
 import { LiveList } from "@liveblocks/client"; 
 import { toPng } from 'html-to-image';
 import { UserButton } from "@clerk/nextjs";
-import Cursor from './Cursor';
+
+// --- CURSOR COMPONENT (Small Version) ---
+const Cursor = memo(({ connectionId, x, y, name, picture }: { connectionId: number, x: number, y: number, name?: string, picture?: string }) => {
+  const colors = ['#ef4444', '#f97316', '#f59e0b', '#84cc16', '#06b6d4', '#3b82f6', '#8b5cf6', '#d946ef'];
+  const color = colors[connectionId % colors.length];
+
+  return (
+    <div
+      className="pointer-events-none absolute top-0 left-0 transition-transform duration-100 ease-linear z-50"
+      style={{ transform: `translateX(${x}px) translateY(${y}px)` }}
+    >
+      <MousePointer2 className="h-5 w-5" style={{ fill: color, color: color }} />
+      <div className="absolute left-4 top-4 flex items-center gap-2 rounded-full pl-1 pr-3 py-1 shadow-md" style={{ backgroundColor: color }}>
+        {picture && (
+            <div className="rounded-full overflow-hidden bg-white shrink-0" style={{ width: '20px', height: '20px' }}>
+                <img src={picture} alt={name} className="w-full h-full object-cover" />
+            </div>
+        )}
+        <div className="text-xs text-white font-semibold whitespace-nowrap">{name || "Guest"}</div>
+      </div>
+    </div>
+  );
+});
+Cursor.displayName = "Cursor";
 
 // --- TYPES ---
 type LayerType = 'rectangle' | 'circle' | 'text' | 'note' | 'image' | 'pencil';
@@ -49,6 +72,9 @@ export default function Canvas() {
   useEffect(() => { setIsMounted(true); }, []);
 
   // --- LIVEBLOCKS ---
+  // ** NEW: Check if storage is actually loaded **
+  const root = useStorage((root) => root);
+  
   const storageElements = useStorage((root) => root.elements);
   const elements = (storageElements || []) as Layer[];
   
@@ -67,8 +93,10 @@ export default function Canvas() {
   const others = useOthers();
   const currentUser = useSelf();
   const [myPresence, updateMyPresence] = useMyPresence();
-  const undo = useUndo();
-  const redo = useRedo();
+  
+  // ** RENAMED: We use these via our "safe" wrappers below **
+  const historyUndo = useUndo();
+  const historyRedo = useRedo();
   const history = useHistory();
 
   // --- STATE ---
@@ -93,6 +121,9 @@ export default function Canvas() {
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 }); 
   const [drawingId, setDrawingId] = useState<string | null>(null);
 
+  // ** CLICK POSITION TRACKER **
+  const clickPosition = useRef<{ x: number, y: number } | null>(null);
+
   // UI STATE
   const [username, setUsername] = useState("Guest");
 
@@ -109,6 +140,23 @@ export default function Canvas() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [tempText, setTempText] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ** SAFE UNDO WRAPPERS **
+  const undo = useCallback(() => {
+    try {
+        historyUndo();
+    } catch (error) {
+        console.error("Undo failed:", error);
+    }
+  }, [historyUndo]);
+
+  const redo = useCallback(() => {
+    try {
+        historyRedo();
+    } catch (error) {
+        console.error("Redo failed:", error);
+    }
+  }, [historyRedo]);
 
   // --- HELPERS ---
   const screenToWorld = (clientX: number, clientY: number) => {
@@ -158,7 +206,7 @@ export default function Canvas() {
     if (liveElements) while (liveElements.length > 0) liveElements.delete(0);
   }, []);
 
-  // --- NEW: CLEAR CHAT ---
+  // --- CLEAR CHAT ---
   const clearChat = useMutation(({ storage }) => {
     const liveMessages = storage.get("messages");
     if (liveMessages) {
@@ -168,23 +216,18 @@ export default function Canvas() {
     }
   }, []);
 
-  // --- SEND MESSAGE (Safe & Robust) ---
+  // --- SEND MESSAGE ---
   const sendMessage = useMutation(({ storage }, { text, user }: { text: string, user: string }) => {
     if (!text.trim()) return;
-    
     const colors = ['#ef4444', '#f97316', '#f59e0b', '#84cc16', '#06b6d4', '#3b82f6', '#8b5cf6', '#d946ef'];
     const userColor = colors[user.length % colors.length];
-    
     let liveMessages = storage.get("messages");
-    
-    // Auto-create list if missing (Lazy Init)
     // @ts-ignore 
     if (!liveMessages) {
         // @ts-ignore
         storage.set("messages", new LiveList([]));
         liveMessages = storage.get("messages");
     }
-
     if (liveMessages) {
         liveMessages.push({ user, text, color: userColor });
     }
@@ -221,9 +264,16 @@ export default function Canvas() {
           const ctx = canvas.getContext('2d');
           if(ctx) {
               ctx.drawImage(img, 0, 0, width, height);
-              const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.3);
-              const startX = (window.innerWidth / 2 - camera.x) / camera.zoom;
-              const startY = (window.innerHeight / 2 - camera.y) / camera.zoom;
+              // ** FIXED: Quality 0.2 prevents crashes **
+              const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.2);
+              
+              const startX = clickPosition.current 
+                  ? clickPosition.current.x 
+                  : (window.innerWidth / 2 - camera.x) / camera.zoom;
+              const startY = clickPosition.current 
+                  ? clickPosition.current.y 
+                  : (window.innerHeight / 2 - camera.y) / camera.zoom;
+
               addElement({
                   id: crypto.randomUUID(), type: 'image', x: startX - (width/2), y: startY - (height/2),
                   width: width, height: height, content: compressedDataUrl
@@ -280,7 +330,7 @@ export default function Canvas() {
     const el = elements.find(el => el.id === id);
     if (!el) return;
 
-    history.pause(); // Fix undo history for resize
+    history.pause(); 
 
     setSelectedId(id);
     setIsResizing(true);
@@ -298,7 +348,11 @@ export default function Canvas() {
     if (e.button === 1 || isSpacePressed) { setIsPanning(true); return; }
 
     if (tool !== 'select') {
-       if (tool === 'image') { fileInputRef.current?.click(); return; }
+       if (tool === 'image') { 
+           clickPosition.current = { x, y };
+           fileInputRef.current?.click(); 
+           return; 
+       }
        
        const newId = crypto.randomUUID();
        let newLayer: Layer = { id: newId, type: tool, x, y, width: 0, height: 0, stroke: currentColor, fill: 'transparent' };
@@ -307,7 +361,6 @@ export default function Canvas() {
            addElement({ ...newLayer, width: 150, height: 40, content: "Double Click", stroke: isDarkMode?'#fff':'#000' });
            setTool('select'); return;
        }
-       // --- MODIFIED LINE BELOW ---
        if (tool === 'note') {
            addElement({ ...newLayer, width: 200, height: 200, content: "double click to edit note", fill: '#facc15' });
            setTool('select'); return;
@@ -425,7 +478,19 @@ export default function Canvas() {
     setTempText(content || "");
   };
 
-  if (!isMounted) return <div className="flex items-center justify-center w-screen h-screen">Loading...</div>;
+  // ** FIXED: LOADING GATE **
+  // This prevents the UI from rendering (and buttons from being clicked)
+  // until Liveblocks is fully connected. Prevents "mutation cannot be used" errors.
+  if (!isMounted || root === null) {
+      return (
+          <div className={`flex items-center justify-center w-screen h-screen ${isDarkMode ? 'bg-[#121212] text-white' : 'bg-gray-100 text-black'}`}>
+              <div className="flex flex-col items-center gap-4">
+                  <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                  <div className="font-semibold">Loading Board...</div>
+              </div>
+          </div>
+      );
+  }
 
   const bgClass = isDarkMode ? 'bg-[#121212] text-white' : 'bg-[#f8f9fa] text-black';
   const toolbarClass = isDarkMode ? 'bg-[#1e1e1e] border-[#333]' : 'bg-white border-gray-200 shadow-xl';
@@ -487,8 +552,7 @@ export default function Canvas() {
       `}</style>
 
       {/* --- LAYER 1: UI OVERLAYS --- */}
-      {/* MODAL REMOVED FOR INLINE EDITING */}
-
+      
       {showNameModal && (
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm pointer-events-auto">
              <div className={`p-6 rounded-xl shadow-2xl border w-80 text-center ${isDarkMode ? 'bg-[#1e1e1e] border-[#333]' : 'bg-white border-gray-200'}`}>
@@ -523,7 +587,7 @@ export default function Canvas() {
         <button onClick={handleExport} className={`p-2 shrink-0 rounded ${isDarkMode ? 'hover:bg-green-900/30' : 'hover:bg-green-100'} text-green-500`}><Camera size={20} /></button>
       </div>
 
-      {/* CHAT SIDEBAR - FIXED SCROLLING */}
+      {/* CHAT SIDEBAR */}
       {isChatOpen && (
         <div 
           className={`fixed right-4 top-20 bottom-20 w-80 flex flex-col rounded-xl border shadow-2xl z-[999] pointer-events-auto touch-auto overflow-hidden ${isDarkMode ? 'bg-[#1e1e1e] border-[#333]' : 'bg-white'}`}
@@ -531,7 +595,6 @@ export default function Canvas() {
           onMouseDown={(e) => e.stopPropagation()}
           onWheel={(e) => e.stopPropagation()}
         >
-            {/* Header with Clear Button */}
             <div className="p-3 border-b border-gray-700 flex justify-between items-center shrink-0">
                 <h3 className="font-bold">Live Chat</h3>
                 <div className="flex gap-2">
@@ -542,7 +605,6 @@ export default function Canvas() {
                 </div>
             </div>
             
-            {/* MESSAGES AREA */}
             <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-2 chat-scroll select-auto touch-auto">
                 {messages.map((msg, i) => (
                     <div key={i} className="flex flex-col select-none">
@@ -573,7 +635,7 @@ export default function Canvas() {
         </div>
       )}
 
-      {/* --- LAYER 2: CANVAS (Handles Drawing/Resizing) --- */}
+      {/* --- LAYER 2: CANVAS --- */}
       <div 
         className={`absolute inset-0 w-full h-full block touch-none select-none z-0 ${tool === 'select' ? 'cursor-default' : 'cursor-crosshair'}`}
         onPointerDown={handlePointerDown}
@@ -588,7 +650,7 @@ export default function Canvas() {
            {uniqueElements.map((el) => {
              const uniqueKey = el.id; 
              const isSelected = selectedId === el.id;
-             const isEditing = editingId === el.id; // CHECK IF EDITING
+             const isEditing = editingId === el.id;
              const normalized = normalizeShape(el);
              const { x, y, width, height } = normalized;
              
@@ -615,7 +677,6 @@ export default function Canvas() {
 
              if (el.type === 'image') return ( <div key={uniqueKey} onDoubleClick={(e) => e.stopPropagation()} style={{ ...baseStyle, width, height }}><img src={el.content} className={`w-full h-full object-contain`} draggable={false} />{SelectionBox}{Handles}</div> );
              
-             // --- INLINE EDITING FOR NOTE ---
              if (el.type === 'note') {
                 return ( 
                     <div key={uniqueKey} onDoubleClick={(e) => handleDoubleClick(e, el.id, el.content || "")} style={{ ...baseStyle, width, height, backgroundColor: el.fill, color: '#000', boxShadow: '4px 4px 10px rgba(0,0,0,0.2)', padding: '10px', fontSize: '18px', fontFamily: 'Comic Sans MS', border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', overflow: 'hidden' }}>
@@ -626,7 +687,7 @@ export default function Canvas() {
                                 onChange={(e) => setTempText(e.target.value)}
                                 onBlur={saveText}
                                 onKeyDown={(e) => { if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveText(); }}}
-                                onPointerDown={(e) => e.stopPropagation()} // CRITICAL: PREVENT DRAG
+                                onPointerDown={(e) => e.stopPropagation()} 
                                 className="w-full h-full bg-transparent border-none outline-none resize-none text-center font-[inherit] text-[inherit] p-0 overflow-hidden pointer-events-auto"
                              />
                         ) : (
@@ -637,7 +698,6 @@ export default function Canvas() {
                 );
              }
 
-             // --- INLINE EDITING FOR TEXT ---
              if (el.type === 'text') {
                  return ( 
                     <div key={uniqueKey} onDoubleClick={(e) => handleDoubleClick(e, el.id, el.content || "")} style={{ ...baseStyle, border: 'none', fontSize: '24px', fontFamily: 'sans-serif', padding: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', whiteSpace: 'pre-wrap', color: el.stroke }}>
@@ -648,7 +708,7 @@ export default function Canvas() {
                                 onChange={(e) => setTempText(e.target.value)}
                                 onBlur={saveText}
                                 onKeyDown={(e) => { if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveText(); }}}
-                                onPointerDown={(e) => e.stopPropagation()} // CRITICAL: PREVENT DRAG
+                                onPointerDown={(e) => e.stopPropagation()} 
                                 className="w-full h-full bg-transparent border-none outline-none resize-none text-center font-[inherit] text-[inherit] p-0 overflow-hidden pointer-events-auto"
                              />
                         ) : (
