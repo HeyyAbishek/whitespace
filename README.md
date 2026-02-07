@@ -8,6 +8,9 @@
 <img src="https://github.com/user-attachments/assets/957d48d1-154b-477e-b81b-fca861eb2451" alt="Demo Screenshot" width="100%" />
 
 ## 🚀 Live Demo
+
+https://github.com/user-attachments/assets/45ba2eb9-f7e1-4ff4-acbe-e082844deda1
+
 [**View Live Deployment**](https://whitespace-lilac.vercel.app)
 
 ## 📚 Documentation
