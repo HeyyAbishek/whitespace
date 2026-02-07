@@ -5,7 +5,7 @@
 
 **Whitespace** is a high-performance, real-time collaborative whiteboard built to solve complex state synchronization challenges using **CRDTs** and a secure, multi-provider identity handshake.
 
-![Demo Screenshot](/screenshot.png)
+<img src="https://github.com/user-attachments/assets/957d48d1-154b-477e-b81b-fca861eb2451" alt="Demo Screenshot" width="100%" />
 
 ## 🚀 Live Demo
 [**View Live Deployment**](https://whitespace-lilac.vercel.app)
