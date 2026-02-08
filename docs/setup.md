@@ -2,8 +2,9 @@
 
 ### Prerequisites
 
-* **Node.js 22+** (Recommended for Next.js 16)
-- npm
+* Node.js `v22+`
+* Next.js `v16`
+* npm
 
 ### Installation
 
