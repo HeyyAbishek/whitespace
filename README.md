@@ -9,7 +9,9 @@
 
 ## 🚀 Live Demo
 
-https://github.com/user-attachments/assets/45ba2eb9-f7e1-4ff4-acbe-e082844deda1
+
+https://github.com/user-attachments/assets/e5879c3a-d312-4f7d-b6b7-fea0b60eab8e
+
 
 [**View Live Deployment**](https://whitespace-lilac.vercel.app)
 
