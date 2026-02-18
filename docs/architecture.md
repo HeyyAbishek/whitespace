@@ -1,4 +1,4 @@
-# System Architecture
+# 🏗️ System Architecture
 
 ## Tech Stack
 
