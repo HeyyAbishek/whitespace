@@ -1,4 +1,4 @@
-# Technical Challenges & Solutions
+# 💥Technical Challenges & Solutions
 
 ## 1. Conflict-Free State Synchronization
 
