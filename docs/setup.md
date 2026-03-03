@@ -1,4 +1,7 @@
-# Local Development Setup
+# 🛠️ Local Development Setup
+
+This guide walks you through setting up the Whitespace - Real-Time Collaborative Design Engine locally.
+
 
 ### Prerequisites
 
