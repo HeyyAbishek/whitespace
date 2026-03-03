@@ -40,6 +40,7 @@ type LayerType = 'rectangle' | 'circle' | 'text' | 'note' | 'image' | 'pencil';
 type HandleType = 'tl' | 't' | 'tr' | 'r' | 'br' | 'b' | 'bl' | 'l';
 
 interface Layer {
+  [key: string]: any;
   id: string;
   type: LayerType;
   x: number;
@@ -61,7 +62,7 @@ interface Message {
 // --- STORAGE CONSTANTS ---
 const MAX_STORAGE_SIZE = 5 * 1024 * 1024; // 5MB
 const MAX_IMAGE_SIZE = 150 * 1024; // 150KB per image
-const MAX_PENCIL_POINTS = 600; // Increased for better drawing
+const MAX_PENCIL_POINTS = 600; // Max points per pencil stroke
 const MAX_ELEMENTS = 1000; // Prevent infinite board growth
 
 // --- HELPERS ---
@@ -73,18 +74,15 @@ function normalizeShape(el: Layer) {
     return { x, y, width, height };
 }
 
-// Helper: Estimate size of a single layer roughly (faster than stringify)
 function getLayerSize(layer: Layer): number {
     let size = 100; // Base overhead
     if (layer.content) size += layer.content.length;
-    if (layer.points) size += layer.points.length * 16; // Approx 16 bytes per point [x,y]
+    if (layer.points) size += layer.points.length * 16;
     return size;
 }
 
 function estimateStorageSize(elements: Layer[]) {
   try {
-    // Only stringify if we need a precise check (e.g. on load or huge add)
-    // Otherwise, summing approximate sizes is safer for the UI thread
     const jsonStr = JSON.stringify(elements);
     return new Blob([jsonStr]).size;
   } catch {
@@ -97,14 +95,10 @@ function simplifyPath(points: number[][]): number[][] {
   
   const result: number[][] = [points[0]];
   let lastPoint = points[0];
-  const epsilon = 2; // Tighter epsilon for smoother curves
+  const epsilon = 2;
   
   for (let i = 1; i < points.length; i++) {
-    const dist = Math.hypot(
-      points[i][0] - lastPoint[0],
-      points[i][1] - lastPoint[1]
-    );
-    
+    const dist = Math.hypot(points[i][0] - lastPoint[0], points[i][1] - lastPoint[1]);
     if (dist > epsilon || i === points.length - 1) {
       result.push(points[i]);
       lastPoint = points[i];
@@ -119,9 +113,12 @@ export default function Canvas() {
   useEffect(() => { setIsMounted(true); }, []);
 
   // --- LIVEBLOCKS ---
-  const root = useStorage((root) => root);
+  const storageRoot = useStorage((root) => root);
   const storageElements = useStorage((root) => root.elements);
   const elements = (storageElements || []) as Layer[];
+  
+  // Check if storage is loaded
+  const isStorageLoaded = storageRoot !== null && storageElements !== undefined;
   
   const uniqueElements = React.useMemo(() => {
     const seen = new Set();
@@ -137,7 +134,6 @@ export default function Canvas() {
   const others = useOthers();
   const currentUser = useSelf();
   const [myPresence, updateMyPresence] = useMyPresence();
-  
   const historyUndo = useUndo();
   const historyRedo = useRedo();
   const history = useHistory();
@@ -168,15 +164,11 @@ export default function Canvas() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [tempText, setTempText] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // ** Track rough storage size locally to avoid heavy calc on every frame **
   const currentStorageSize = useRef(0);
 
   useEffect(() => {
-    // Recalculate full size only when elements change length significantly
-    // or periodically. For now, we do it on mount/update of elements array length.
     currentStorageSize.current = estimateStorageSize(elements);
-  }, [elements.length]); // Dependencies simplified for perf
+  }, [elements.length]);
 
   useEffect(() => {
     if (currentUser?.info?.name) {
@@ -193,20 +185,36 @@ export default function Canvas() {
     try { historyRedo(); } catch (error) { console.error("Redo failed:", error); }
   }, [historyRedo]);
 
-  // --- SCREEN TO WORLD ---
-  const screenToWorld = (clientX: number, clientY: number) => {
-    return {
-      x: (clientX - camera.x) / camera.zoom,
-      y: (clientY - camera.y) / camera.zoom
-    };
-  };
+  const screenToWorld = useCallback((clientX: number, clientY: number) => ({
+    x: (clientX - camera.x) / camera.zoom,
+    y: (clientY - camera.y) / camera.zoom
+  }), [camera]);
 
-  const findIndexById = (liveList: any, targetId: string) => {
+  // FIX: Safety - prevent panning getting stuck on window blur
+  useEffect(() => {
+    const handleBlur = () => { 
+      setIsSpacePressed(false); 
+      setIsPanning(false); 
+    };
+    window.addEventListener('blur', handleBlur);
+    return () => window.removeEventListener('blur', handleBlur);
+  }, []);
+
+  // TYPE SAFETY FIX: Strict Type Guard to eliminate 'any' usage
+  const findIndexById = (liveList: LiveList<Layer> | Layer[], targetId: string): number => {
     if (!liveList) return -1;
-    for (let i = 0; i < liveList.length; i++) {
-        const item = liveList.get(i);
-        const itemId = item?.get ? item.get("id") : item?.id;
-        if (itemId === targetId) return i;
+    if ('get' in liveList && typeof liveList.get === 'function') {
+        const list = liveList as LiveList<any>; 
+        for (let i = 0; i < list.length; i++) {
+            const item = list.get(i);
+            const itemId = item?.get ? item.get("id") : item?.id;
+            if (itemId === targetId) return i;
+        }
+    } else {
+        const arr = liveList as Layer[];
+        for (let i = 0; i < arr.length; i++) {
+            if (arr[i]?.id === targetId) return i;
+        }
     }
     return -1;
   };
@@ -239,18 +247,17 @@ export default function Canvas() {
 
   const updateElement = useMutation(({ storage }, { id, updates }: { id: string; updates: Partial<Layer> }) => {
     try {
-      const liveElements = storage.get("elements");
+      const liveElements = storage.get("elements") as LiveList<any>;
       if (!liveElements) return false;
       const index = findIndexById(liveElements, id);
       if (index !== -1) {
           const current = liveElements.get(index);
           const currentObj = current?.toObject ? current.toObject() : current;
           
-          // ** Check size before update if it's a big change (like points) **
+          // Check size before update if it's a big change
           if (updates.points && updates.points.length > (currentObj.points?.length || 0) + 10) {
               const estimatedNewSize = getLayerSize({ ...currentObj, ...updates });
               if (currentStorageSize.current + estimatedNewSize - getLayerSize(currentObj) > MAX_STORAGE_SIZE) {
-                  // Silently fail or warn - don't alert on every mousemove
                   return false; 
               }
           }
@@ -267,7 +274,7 @@ export default function Canvas() {
 
   const deleteElement = useMutation(({ storage }, id: string) => {
     try {
-      const liveElements = storage.get("elements");
+      const liveElements = storage.get("elements") as LiveList<any>;
       if (liveElements) {
           const index = findIndexById(liveElements, id);
           if (index !== -1) {
@@ -284,8 +291,12 @@ export default function Canvas() {
   
   const clearBoard = useMutation(({ storage }) => {
     try {
-      const liveElements = storage.get("elements");
-      if (liveElements) while (liveElements.length > 0) liveElements.delete(0);
+      const liveElements = storage.get("elements") as LiveList<any>;
+      if (liveElements) {
+          while (liveElements.length > 0) {
+              liveElements.delete(0);
+          }
+      }
     } catch (error) {
       console.error('Failed to clear board:', error);
     }
@@ -293,8 +304,12 @@ export default function Canvas() {
 
   const clearChat = useMutation(({ storage }) => {
     try {
-      const liveMessages = storage.get("messages");
-      if (liveMessages) while (liveMessages.length > 0) liveMessages.delete(0);
+      const liveMessages = storage.get("messages") as LiveList<any>;
+      if (liveMessages) {
+          while (liveMessages.length > 0) {
+              liveMessages.delete(0);
+          }
+      }
     } catch (error) {
       console.error('Failed to clear chat:', error);
     }
@@ -303,15 +318,17 @@ export default function Canvas() {
   const sendMessage = useMutation(({ storage }, { text, user }: { text: string, user: string }) => {
     try {
       if (!text.trim()) return;
+      
       const colors = ['#ef4444', '#f97316', '#f59e0b', '#84cc16', '#06b6d4', '#3b82f6', '#8b5cf6', '#d946ef'];
       const userColor = colors[user.length % colors.length];
+      
       let liveMessages = storage.get("messages");
-      // @ts-ignore 
+      
       if (!liveMessages) {
-          // @ts-ignore
           storage.set("messages", new LiveList([]));
           liveMessages = storage.get("messages");
       }
+
       if (liveMessages) {
           liveMessages.push({ user, text, color: userColor });
       }
@@ -392,17 +409,11 @@ export default function Canvas() {
           }
       };
       
-      img.onerror = () => {
-        alert('Failed to load image. Please try a different file.');
-      };
-      
+      img.onerror = () => alert('Failed to load image. Please try a different file.');
       img.src = event.target?.result as string;
     };
     
-    reader.onerror = () => {
-      alert('Failed to read file. Please try again.');
-    };
-    
+    reader.onerror = () => alert('Failed to read file. Please try again.');
     reader.readAsDataURL(file);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
@@ -425,14 +436,15 @@ export default function Canvas() {
     }
   }, [isDarkMode]);
 
-  const saveText = () => {
+  const saveText = useCallback(() => {
     if (editingId) {
         updateElement({ id: editingId, updates: { content: tempText } });
         setEditingId(null);
         setTempText("");
     }
-  };
+  }, [editingId, tempText, updateElement]);
 
+  // --- SCROLL CHAT ---
   useEffect(() => {
     if (isChatOpen) {
        setTimeout(() => {
@@ -460,14 +472,14 @@ export default function Canvas() {
     };
   }, [selectedId, deleteElement, undo, redo, editingId, showNameModal]);
 
-  // --- EVENT HANDLERS ---
-  const handleResizeStart = (e: React.PointerEvent, id: string, handle: HandleType) => {
+  // --- HANDLERS ---
+  const handleResizeStart = useCallback((e: React.PointerEvent, id: string, handle: HandleType) => {
     e.stopPropagation();
     e.preventDefault();
     const el = elements.find(el => el.id === id);
     if (!el) return;
 
-    history.pause(); 
+    history.pause();
 
     setSelectedId(id);
     setIsResizing(true);
@@ -477,9 +489,12 @@ export default function Canvas() {
     const { x, y, width, height } = normalizeShape(el);
 
     setResizeStart({ x, y, width, height, startX: pointerX, startY: pointerY });
-  };
+  }, [elements, history, screenToWorld]);
 
   const handlePointerDown = (e: React.PointerEvent) => {
+    // Don't allow interactions until storage is loaded
+    if (!isStorageLoaded) return;
+    
     const { x, y } = screenToWorld(e.clientX, e.clientY);
 
     if (e.button === 1 || isSpacePressed) { setIsPanning(true); return; }
@@ -496,18 +511,16 @@ export default function Canvas() {
 
        if (tool === 'text') {
            addElement({ ...newLayer, width: 150, height: 40, content: "Double Click", stroke: isDarkMode?'#fff':'#000' });
-           setTool('select'); 
-           return;
+           setTool('select'); return;
        }
        if (tool === 'note') {
            addElement({ ...newLayer, width: 200, height: 200, content: "double click to edit note", fill: '#facc15' });
-           setTool('select'); 
-           return;
+           setTool('select'); return;
        }
        if (tool === 'pencil') {
            history.pause();
-           addElement({ ...newLayer, width: 0, height: 0, points: [[0, 0]] });
-           setDrawingId(newId); 
+           const success = addElement({ ...newLayer, width: 0, height: 0, points: [[0, 0], [0, 0]] });
+           if (success) setDrawingId(newId);
            return;
        }
        history.pause();
@@ -582,15 +595,12 @@ export default function Canvas() {
               const newPointY = Math.round(y - el.y);
               const dist = Math.hypot(newPointX - lastPoint[0], newPointY - lastPoint[1]);
               
-              // ** FIXED: Reduced Throttle from 8px to 3px for smoother writing **
+              // Smoother pencil
               if (dist > 3) { 
-                  // ** FIXED: Limit points count, but STOP adding instead of SLICING **
                   if (el.points.length < MAX_PENCIL_POINTS) {
                       const newPoints = [...el.points, [newPointX, newPointY]];
                       updateElement({ id: drawingId, updates: { points: newPoints } });
                   }
-                  // If we hit MAX_PENCIL_POINTS, we just stop adding points. 
-                  // The user will see they stopped drawing, which is better than disappearing ink.
               }
           } else {
               updateElement({ id: drawingId, updates: { width: x - el.x, height: y - el.y } });
@@ -604,7 +614,7 @@ export default function Canvas() {
   };
 
   const handlePointerUp = useCallback(() => {
- 
+    // Simplify pencil path on release for better performance
     if (drawingId) {
       const el = elements.find(e => e.id === drawingId);
       if (el?.type === 'pencil' && el.points && el.points.length > 5) {
@@ -613,9 +623,7 @@ export default function Canvas() {
       }
     }
     
- 
     history.resume();
-    
     setDrawingId(null);
     setIsDragging(false);
     setIsPanning(false);
@@ -624,7 +632,7 @@ export default function Canvas() {
     setActiveHandle(null);
   }, [drawingId, elements, history, updateElement]);
 
-
+  // Global pointer up listener to catch release outside canvas
   useEffect(() => {
       window.addEventListener('pointerup', handlePointerUp);
       window.addEventListener('pointercancel', handlePointerUp);
@@ -640,28 +648,13 @@ export default function Canvas() {
     setCamera(prev => ({ ...prev, zoom: newZoom }));
   };
 
-  const handleDoubleClick = (e: React.MouseEvent, id: string, content: string) => {
+  const handleDoubleClick = useCallback((e: React.MouseEvent, id: string, content: string) => {
     e.stopPropagation();
     setEditingId(id);
     setTempText(content || "");
-  };
+  }, []);
 
-  // LOADING GATE
-  if (!isMounted || root === null) {
-      return (
-          <div className={`flex items-center justify-center w-screen h-screen ${isDarkMode ? 'bg-[#121212] text-white' : 'bg-gray-100 text-black'}`}>
-              <div className="flex flex-col items-center gap-4">
-                  <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
-                  <div className="font-semibold">Loading Board...</div>
-              </div>
-          </div>
-      );
-  }
-
-  const bgClass = isDarkMode ? 'bg-[#121212] text-white' : 'bg-[#f8f9fa] text-black';
-  const toolbarClass = isDarkMode ? 'bg-[#1e1e1e] border-[#333]' : 'bg-white border-gray-200 shadow-xl';
-  const btnClass = (active: boolean) => `p-2 shrink-0 rounded transition-colors ${active ? 'bg-blue-600 text-white' : isDarkMode ? 'hover:bg-[#333] text-gray-400' : 'hover:bg-gray-100 text-gray-600'}`;
-
+  // --- MOVED UP: Hook order fix ---
   const renderHandles = (el: Layer, normalized: { x: number, y: number, width: number, height: number }) => {
       const { width: w, height: h } = normalized;
       const handleSize = 10;
@@ -691,6 +684,127 @@ export default function Canvas() {
       ));
   };
 
+  // --- MOVED UP: Hook order fix ---
+  const renderedElements = React.useMemo(() => {
+    return uniqueElements.map((el) => {
+        const uniqueKey = el.id; 
+        const isSelected = selectedId === el.id;
+        const isEditing = editingId === el.id;
+        const normalized = normalizeShape(el);
+        const { x, y, width, height } = normalized;
+        
+        const baseStyle: React.CSSProperties = { 
+          position: 'absolute', 
+          left: `${x}px`, 
+          top: `${y}px`, 
+          pointerEvents: tool === 'select' ? 'auto' : 'none', 
+          cursor: tool === 'select' ? 'move' : 'default', 
+          zIndex: isSelected ? 50 : 1 
+        };
+
+        const selectionBorderRadius = el.type === 'circle' ? '50%' : '0%';
+        const SelectionBox = isSelected && tool === 'select' && !isEditing ? (
+            <div className="absolute -inset-1 border-2 border-blue-500 border-dashed pointer-events-none"
+                 style={{ borderRadius: selectionBorderRadius }} />
+        ) : null;
+
+        const Handles = isSelected && tool === 'select' && !isEditing ? renderHandles(el, normalized) : null;
+
+        if (el.type === 'pencil' && el.points) {
+            const pathData = el.points.map((p, i) => (i === 0 ? `M ${p[0]} ${p[1]}` : `L ${p[0]} ${p[1]}`)).join(' ');
+            return (
+                <div key={uniqueKey} style={baseStyle}>
+                    <svg style={{ overflow: 'visible' }}><path d={pathData} stroke={el.stroke} strokeWidth={3} fill="none" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                    {isSelected && <div className="absolute inset-0 border-2 border-blue-500 border-dashed opacity-50 pointer-events-none" />}
+                </div>
+            );
+        }
+
+        if (el.type === 'image') return ( <div key={uniqueKey} onDoubleClick={(e) => e.stopPropagation()} style={{ ...baseStyle, width: `${width}px`, height: `${height}px` }}><img src={el.content} className={`w-full h-full object-contain`} draggable={false} />{SelectionBox}{Handles}</div> );
+        
+        if (el.type === 'note' || el.type === 'text') {
+           const isNote = el.type === 'note';
+           return ( 
+               <div 
+                 key={uniqueKey} 
+                 onDoubleClick={(e) => handleDoubleClick(e, el.id, el.content || "")} 
+                 style={{ 
+                   ...baseStyle, 
+                   width: isNote ? `${width}px` : 'auto', 
+                   height: isNote ? `${height}px` : 'auto', 
+                   backgroundColor: isNote ? (el.fill || '#facc15') : 'transparent', 
+                   color: isNote ? '#000' : (el.stroke || (isDarkMode ? '#fff' : '#000')), 
+                   boxShadow: isNote ? '4px 4px 10px rgba(0,0,0,0.2)' : 'none', 
+                   padding: '10px', 
+                   fontSize: isNote ? '18px' : '24px', 
+                   fontFamily: isNote ? 'Comic Sans MS' : 'sans-serif', 
+                   border: 'none', 
+                   display: 'flex', 
+                   alignItems: 'center', 
+                   justifyContent: 'center', 
+                   textAlign: 'center', 
+                   overflow: 'hidden' 
+                 }}
+               >
+                   {isEditing ? (
+                        <textarea 
+                           autoFocus
+                           value={tempText}
+                           onChange={(e) => setTempText(e.target.value)}
+                           onBlur={saveText}
+                           onKeyDown={(e) => { if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveText(); }}}
+                           onPointerDown={(e) => e.stopPropagation()} 
+                           className="w-full h-full bg-transparent border-none outline-none resize-none text-center font-[inherit] text-[inherit] p-0 overflow-hidden pointer-events-auto"
+                        />
+                   ) : (
+                        el.content || (isNote ? "Double Click" : "Double click to edit")
+                   )}
+                   {SelectionBox}{Handles}
+               </div> 
+           );
+        }
+
+        return ( 
+          <div 
+            key={uniqueKey} 
+            onDoubleClick={(e) => e.stopPropagation()} 
+            className={`absolute bg-transparent`} 
+            style={{ 
+              ...baseStyle, 
+              width: `${width}px`, 
+              height: `${height}px`, 
+              borderWidth: '2px', 
+              borderStyle: 'solid', 
+              borderColor: el.stroke, 
+              borderRadius: el.type === 'circle' ? '50%' : '0%' 
+            }}
+          >
+            {SelectionBox}{Handles} 
+          </div> 
+        );
+    });
+  }, [uniqueElements, selectedId, editingId, tool, isDarkMode, tempText, camera, handleResizeStart, handleDoubleClick, saveText]);
+
+  // --- EARLY RETURN AFTER ALL HOOKS ---
+  if (!isMounted || !isStorageLoaded) {
+      return (
+          <div className="flex items-center justify-center w-screen h-screen bg-[#121212] text-white">
+              <div className="flex flex-col items-center gap-4">
+                  <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                  <div className="font-semibold">Loading Board...</div>
+              </div>
+          </div>
+      );
+  }
+
+  const bgClass = isDarkMode ? 'bg-[#121212] text-white' : 'bg-[#f8f9fa] text-black';
+  const toolbarClass = isDarkMode ? 'bg-[#1e1e1e] border-[#333]' : 'bg-white border-gray-200 shadow-xl';
+  const btnClass = (active: boolean) => {
+    const disabled = !isStorageLoaded;
+    if (disabled) return 'p-2 shrink-0 rounded opacity-50 cursor-not-allowed text-gray-500';
+    return `p-2 shrink-0 rounded transition-colors ${active ? 'bg-blue-600 text-white' : isDarkMode ? 'hover:bg-[#333] text-gray-400' : 'hover:bg-gray-100 text-gray-600'}`;
+  };
+
   return (
     <div className={`fixed inset-0 w-full h-full overflow-hidden ${bgClass}`}>
       
@@ -698,9 +812,11 @@ export default function Canvas() {
         .chat-scroll {
           scrollbar-width: thin;
           scrollbar-color: #888 transparent;
+          -webkit-overflow-scrolling: touch;
         }
         .chat-scroll::-webkit-scrollbar {
           width: 8px;
+          display: block;
         }
         .chat-scroll::-webkit-scrollbar-track {
           background: transparent;
@@ -709,7 +825,17 @@ export default function Canvas() {
           background-color: #888;
           border-radius: 4px;
         }
+        .chat-scroll::-webkit-scrollbar-thumb:hover {
+          background-color: #666;
+        }
       `}</style>
+
+      {/* --- UX IMPROVEMENT: GUEST BADGE --- */}
+      {username === "Guest" && (
+        <div className="fixed top-6 right-6 z-[100] pointer-events-none px-4 py-2 bg-black/60 backdrop-blur-md border border-gray-700 rounded-full text-white text-xs font-bold tracking-widest uppercase shadow-xl">
+          Guest Mode
+        </div>
+      )}
 
       {showNameModal && (
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm pointer-events-auto">
@@ -721,29 +847,31 @@ export default function Canvas() {
           </div>
       )}
 
+      {/* Toolbar */}
       <div className={`fixed top-4 left-1/2 -translate-x-1/2 p-2 rounded-lg flex gap-2 z-50 border items-center select-none pointer-events-auto ${toolbarClass}`}>
-        <button onClick={() => setTool('select')} className={btnClass(tool === 'select')}><MousePointer2 size={20} /></button>
-        <button onClick={() => setTool('pencil')} className={btnClass(tool === 'pencil')}><Pencil size={20} /></button>
-        <button onClick={() => setTool('rectangle')} className={btnClass(tool === 'rectangle')}><Square size={20} /></button>
-        <button onClick={() => setTool('circle')} className={btnClass(tool === 'circle')}><Circle size={20} /></button>
-        <button onClick={() => setTool('text')} className={btnClass(tool === 'text')}><Type size={20} /></button>
-        <button onClick={() => setTool('note')} className={btnClass(tool === 'note')}><StickyNote size={20} /></button>
-        <button onClick={() => setTool('image')} className={btnClass(tool === 'image')}><ImageIcon size={20} /></button>
+        <button disabled={!isStorageLoaded} onClick={() => setTool('select')} className={btnClass(tool === 'select')}><MousePointer2 size={20} /></button>
+        <button disabled={!isStorageLoaded} onClick={() => setTool('pencil')} className={btnClass(tool === 'pencil')}><Pencil size={20} /></button>
+        <button disabled={!isStorageLoaded} onClick={() => setTool('rectangle')} className={btnClass(tool === 'rectangle')}><Square size={20} /></button>
+        <button disabled={!isStorageLoaded} onClick={() => setTool('circle')} className={btnClass(tool === 'circle')}><Circle size={20} /></button>
+        <button disabled={!isStorageLoaded} onClick={() => setTool('text')} className={btnClass(tool === 'text')}><Type size={20} /></button>
+        <button disabled={!isStorageLoaded} onClick={() => setTool('note')} className={btnClass(tool === 'note')}><StickyNote size={20} /></button>
+        <button disabled={!isStorageLoaded} onClick={() => setTool('image')} className={btnClass(tool === 'image')}><ImageIcon size={20} /></button>
         <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleImageUpload} />
         <div className={`w-px h-6 mx-1 shrink-0 ${isDarkMode ? 'bg-[#333]' : 'bg-gray-300'}`} />
         <UserButton />
         <div className={`w-px h-6 mx-1 shrink-0 ${isDarkMode ? 'bg-[#333]' : 'bg-gray-300'}`} />
-        <button onClick={undo} className={btnClass(false)}><Undo size={20} /></button>
-        <button onClick={redo} className={btnClass(false)}><Redo size={20} /></button>
+        <button disabled={!isStorageLoaded} onClick={undo} className={btnClass(false)}><Undo size={20} /></button>
+        <button disabled={!isStorageLoaded} onClick={redo} className={btnClass(false)}><Redo size={20} /></button>
         <div className={`w-px h-6 mx-1 shrink-0 ${isDarkMode ? 'bg-[#333]' : 'bg-gray-300'}`} />
-        <button onClick={() => { if(confirm('Clear board?')) clearBoard(); }} className={`p-2 shrink-0 rounded ${isDarkMode ? 'hover:bg-red-900/30' : 'hover:bg-red-100'} text-red-500`}><Trash2 size={20} /></button>
+        <button disabled={!isStorageLoaded} onClick={() => { if(confirm('Clear board?')) clearBoard(); }} className={`p-2 shrink-0 rounded ${isDarkMode ? 'hover:bg-red-900/30' : 'hover:bg-red-100'} text-red-500`}><Trash2 size={20} /></button>
         <div className={`w-px h-6 mx-1 shrink-0 ${isDarkMode ? 'bg-[#333]' : 'bg-gray-300'}`} />
-        <input type="color" value={currentColor} onChange={(e) => setCurrentColor(e.target.value)} className="w-8 h-8 p-0 border-0 rounded cursor-pointer shrink-0" />
+        <input type="color" value={currentColor} onChange={(e) => setCurrentColor(e.target.value)} className="w-8 h-8 p-0 border-0 rounded cursor-pointer shrink-0" disabled={!isStorageLoaded} />
         <button onClick={() => setIsDarkMode(!isDarkMode)} className={btnClass(false)}>{isDarkMode ? <Sun size={20} className="text-yellow-400" /> : <Moon size={20} className="text-slate-600" />}</button>
         <button onClick={() => setIsChatOpen(!isChatOpen)} className={btnClass(isChatOpen)}><MessageCircle size={20} /></button>
-        <button onClick={handleExport} className={`p-2 shrink-0 rounded ${isDarkMode ? 'hover:bg-green-900/30' : 'hover:bg-green-100'} text-green-500`}><Camera size={20} /></button>
+        <button disabled={!isStorageLoaded} onClick={handleExport} className={`p-2 shrink-0 rounded ${isDarkMode ? 'hover:bg-green-900/30' : 'hover:bg-green-100'} text-green-500`}><Camera size={20} /></button>
       </div>
 
+      {/* CHAT SIDEBAR */}
       {isChatOpen && (
         <div 
           className={`fixed right-4 top-20 bottom-20 w-80 flex flex-col rounded-xl border shadow-2xl z-[999] pointer-events-auto touch-auto overflow-hidden ${isDarkMode ? 'bg-[#1e1e1e] border-[#333]' : 'bg-white'}`}
@@ -791,92 +919,22 @@ export default function Canvas() {
         </div>
       )}
 
+      {/* CANVAS */}
       <div 
         className={`absolute inset-0 w-full h-full block touch-none select-none z-0 ${tool === 'select' ? 'cursor-default' : 'cursor-crosshair'}`}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
-        onPointerLeave={() => { updateMyPresence({ cursor: null }); }}
+        onPointerUp={handlePointerUp}
+        onPointerLeave={() => { updateMyPresence({ cursor: null }); setIsDragging(false); }}
         onWheel={handleWheel}
       >
         <div id="canvas-content" className="w-full h-full origin-top-left pointer-events-none" style={{ transform: `translate(${camera.x}px, ${camera.y}px) scale(${camera.zoom})` }}>
            <div className="absolute inset-0 opacity-20" style={{ backgroundImage: `radial-gradient(${isDarkMode ? '#888' : '#ccc'} 1px, transparent 1px)`, backgroundSize: '20px 20px' }} />
            
-           {uniqueElements.map((el) => {
-             const uniqueKey = el.id; 
-             const isSelected = selectedId === el.id;
-             const isEditing = editingId === el.id;
-             const normalized = normalizeShape(el);
-             const { x, y, width, height } = normalized;
-             
-             const pointerStyle = { pointerEvents: tool === 'select' ? 'auto' : 'none', cursor: tool === 'select' ? 'move' : 'default', zIndex: isSelected ? 50 : 1 } as const;
-             const baseStyle = { position: 'absolute' as const, left: x, top: y, ...pointerStyle };
+           {/* Rendering the performance-optimized elements */}
+           {renderedElements}
 
-             const selectionBorderRadius = el.type === 'circle' ? '50%' : '0%';
-             const SelectionBox = isSelected && tool === 'select' && !isEditing ? (
-                 <div className="absolute -inset-1 border-2 border-blue-500 border-dashed pointer-events-none"
-                      style={{ borderRadius: selectionBorderRadius }} />
-             ) : null;
-
-             const Handles = isSelected && tool === 'select' && !isEditing ? renderHandles(el, normalized) : null;
-
-             if (el.type === 'pencil' && el.points) {
-                 const pathData = el.points.map((p, i) => (i === 0 ? `M ${p[0]} ${p[1]}` : `L ${p[0]} ${p[1]}`)).join(' ');
-                 return (
-                     <div key={uniqueKey} style={baseStyle}>
-                         <svg style={{ overflow: 'visible' }}><path d={pathData} stroke={el.stroke} strokeWidth={3} fill="none" strokeLinecap="round" strokeLinejoin="round" /></svg>
-                         {isSelected && <div className="absolute inset-0 border-2 border-blue-500 border-dashed opacity-50 pointer-events-none" />}
-                     </div>
-                 );
-             }
-
-             if (el.type === 'image') return ( <div key={uniqueKey} onDoubleClick={(e) => e.stopPropagation()} style={{ ...baseStyle, width, height }}><img src={el.content} className={`w-full h-full object-contain`} draggable={false} />{SelectionBox}{Handles}</div> );
-             
-             if (el.type === 'note') {
-                return ( 
-                    <div key={uniqueKey} onDoubleClick={(e) => handleDoubleClick(e, el.id, el.content || "")} style={{ ...baseStyle, width, height, backgroundColor: el.fill, color: '#000', boxShadow: '4px 4px 10px rgba(0,0,0,0.2)', padding: '10px', fontSize: '18px', fontFamily: 'Comic Sans MS', border: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', overflow: 'hidden' }}>
-                        {isEditing ? (
-                             <textarea 
-                                autoFocus
-                                value={tempText}
-                                onChange={(e) => setTempText(e.target.value)}
-                                onBlur={saveText}
-                                onKeyDown={(e) => { if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveText(); }}}
-                                onPointerDown={(e) => e.stopPropagation()} 
-                                className="w-full h-full bg-transparent border-none outline-none resize-none text-center font-[inherit] text-[inherit] p-0 overflow-hidden pointer-events-auto"
-                             />
-                        ) : (
-                             el.content
-                        )}
-                        {SelectionBox}{Handles}
-                    </div> 
-                );
-             }
-
-             if (el.type === 'text') {
-                 return ( 
-                    <div key={uniqueKey} onDoubleClick={(e) => handleDoubleClick(e, el.id, el.content || "")} style={{ ...baseStyle, border: 'none', fontSize: '24px', fontFamily: 'sans-serif', padding: '4px', display: 'flex', alignItems: 'center', justifyContent: 'center', whiteSpace: 'pre-wrap', color: el.stroke }}>
-                        {isEditing ? (
-                             <textarea 
-                                autoFocus
-                                value={tempText}
-                                onChange={(e) => setTempText(e.target.value)}
-                                onBlur={saveText}
-                                onKeyDown={(e) => { if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); saveText(); }}}
-                                onPointerDown={(e) => e.stopPropagation()} 
-                                className="w-full h-full bg-transparent border-none outline-none resize-none text-center font-[inherit] text-[inherit] p-0 overflow-hidden pointer-events-auto"
-                             />
-                        ) : (
-                             el.content
-                        )}
-                        {SelectionBox}{Handles}
-                    </div> 
-                 );
-             }
-
-             return ( <div key={uniqueKey} onDoubleClick={(e) => e.stopPropagation()} className={`absolute bg-transparent`} style={{ ...baseStyle, width, height, borderWidth: '2px', borderStyle: 'solid', borderColor: el.stroke, borderRadius: el.type === 'circle' ? '50%' : '0%' }}>{SelectionBox}{Handles} </div> );
-           })}
-
-           <div className="cursor-overlay">
+           <div className="cursor-overlay pointer-events-none absolute inset-0">
                {others.map(({ connectionId, presence, info }) => presence?.cursor && <Cursor key={connectionId} x={presence.cursor.x} y={presence.cursor.y} connectionId={connectionId} name={info?.name} picture={info?.picture} /> )}
            </div>
         </div>
