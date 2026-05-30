@@ -95,7 +95,7 @@ function simplifyPath(points: number[][]): number[][] {
   
   const result: number[][] = [points[0]];
   let lastPoint = points[0];
-  const epsilon = 2;
+  const epsilon = 0.8;
   
   for (let i = 1; i < points.length; i++) {
     const dist = Math.hypot(points[i][0] - lastPoint[0], points[i][1] - lastPoint[1]);
